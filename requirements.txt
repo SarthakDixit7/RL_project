@@ -8,5 +8,7 @@ opencv-python
 pygame
 pyglet
 setuptools
+tensorboard
+torch
 tqdm
 twine
