@@ -1,7 +1,9 @@
-gym
+gymnasium
+gym-super-mario-bros==7.4.0
+gym<0.27
 matplotlib
 nes-py
-numpy
+numpy<2
 opencv-python
 pygame
 pyglet
