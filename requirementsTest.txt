@@ -1,0 +1,26 @@
+# Core dependencies for Super Mario Bros DQN training
+# Compatible with Python 3.10
+
+# NumPy - pinned to 1.23.x for compatibility with nes-py and TensorFlow 2.11
+numpy==1.23.5
+
+# TensorFlow and Keras - version 2.11 is compatible with NumPy 1.23.x
+tensorflow==2.11.0
+keras==2.11.0
+
+# Protobuf - pinned to avoid TensorFlow compatibility issues
+protobuf==3.19.6
+
+# NES emulator and Super Mario Bros environment
+nes-py==8.2.1
+gym-super-mario-bros==7.4.0
+
+# Gymnasium - for modern gym API and type hints
+gymnasium
+
+# Image processing (optional but recommended for better frame preprocessing)
+pillow
+
+# Note: If you encounter ROM parsing errors with nes-py, ensure you're using
+# the exact versions specified above. The combination of numpy==1.23.5,
+# tensorflow==2.11.0, and nes-py==8.2.1 has been tested to work together.
