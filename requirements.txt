@@ -1,0 +1,10 @@
+gym
+matplotlib
+nes-py
+numpy
+opencv-python
+pygame
+pyglet
+setuptools
+tqdm
+twine
