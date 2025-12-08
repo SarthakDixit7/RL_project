@@ -1,6 +1,7 @@
 import numpy as np
 from model.actor import Actor
 from model.critic import Critic
+import tensorflow as tf
 
 ## 
 ## Initial PPO implementation 
@@ -71,36 +72,40 @@ class AgentPPO:
         self.collect_data(env)
         
         # 2. train the actor
-        print("=> Training Actor")
+        print("=> Training Agent")
         for epoch in range(epoch_num):
 
             # print(f" epoch: {epoch}")
 
             for batch in range(0, len(self.stored_traj["adv"]), batch_size):
+
+                # ONLY CONVERT HERE OTHERWISE GPU MEMORY IS COOKED - gradient tape gets too big if not batch allocated to GPU
+                # again expanding dims to match the concatenated observations, idk if this fixes calc problems but at least its consistent
+                # i.e 
+                # from 
+                # tf.Tensor(x1,x2, ...], shape=(35,), dtype=float32)
+                # to
+                # tf.Tensor([],[], ...], shape=(35, 1), dtype=float32)
+                obs = tf.concat(self.stored_traj["observation"][batch: (batch + batch_size) ], axis=0)
+                action_prob_k = tf.expand_dims(tf.convert_to_tensor(self.stored_traj["action_prob"][batch: (batch + batch_size) ]), axis=-1)
+                adv_k = tf.expand_dims(tf.convert_to_tensor(self.stored_traj["adv"][batch: (batch + batch_size) ]), axis=-1)
+                action_k = tf.expand_dims(tf.convert_to_tensor(self.stored_traj["action"][batch: (batch + batch_size)]), axis=-1)
+                rtg = tf.expand_dims(tf.convert_to_tensor(self.stored_traj["rtg"][batch: (batch + batch_size) ]),axis=-1)
                 
                 self.actor.train(
                     optimiser = actor_opt,
-                    obs = self.stored_traj["observation"][batch: (batch + batch_size) ], 
-                    action_prob_k = self.stored_traj["action_prob"][batch: (batch + batch_size) ], 
-                    adv_k = self.stored_traj["adv"][batch: (batch + batch_size) ], 
-                    action_k = self.stored_traj["action"][batch: (batch + batch_size)],
+                    obs = obs, 
+                    action_prob_k = action_prob_k, 
+                    adv_k = adv_k, 
+                    action_k = action_k,
                     eps = self.epsilon
                 )
 
-        # 3. train critic
-        print("=> Training Critic \n")
-        for epoch in range(epoch_num):
-
-            # print(f" epoch: {epoch}")
-
-            for batch in range(0, len(self.stored_traj["adv"]), batch_size):
-                
                 self.critic.train(
                     critic_opt,
-                    self.stored_traj["observation"][batch: (batch + batch_size) ], 
-                    self.stored_traj["rtg"][batch: (batch + batch_size) ], 
+                    obs, 
+                    rtg, 
                 )
-
 
 
 #

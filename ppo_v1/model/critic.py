@@ -33,18 +33,13 @@ class Critic:
         value = self.cnn(state)
         return value
 
-    # @tf.function
+    @tf.function
     def train(
         self, 
         optimiser,
         obs,
         rtg
     ) -> None:
-
-        # SAME AGAIN GPU COOKED 
-        obs = tf.concat(obs, axis=0)
-        # dimension added on the last one just to match the value format, idk if this actually fixes anything
-        rtg = tf.expand_dims(tf.convert_to_tensor(rtg),axis=-1)
 
         with tf.GradientTape() as tape:
             value = self.predict(obs)

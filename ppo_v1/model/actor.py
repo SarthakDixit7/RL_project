@@ -45,7 +45,7 @@ class Actor:
         probabilities = self.cnn(state)
         return probabilities
     
-    # @tf.function
+    @tf.function
     def train(
         self,
         optimiser,
@@ -55,24 +55,7 @@ class Actor:
         action_k,
         eps
     ) -> None:
-
-        # ONLY CONVERT HERE OTHERWISE GPU MEMORY IS COOKED - gradient tape gets too big if not batch allocated to GPU
-        # again expanding dims to match the concatenated observations, idk if this fixes calc problems but at least its consistent
-        # i.e 
-        # from 
-        # tf.Tensor(x1,x2, ...], shape=(35,), dtype=float32)
-        # to
-        # tf.Tensor([],[], ...], shape=(35, 1), dtype=float32)
-        obs = tf.concat(obs, axis=0)
-        action_prob_k = tf.expand_dims(tf.convert_to_tensor(action_prob_k), axis=-1)
-        adv_k = tf.expand_dims(tf.convert_to_tensor(adv_k), axis=-1)
-        action_k = tf.expand_dims(tf.convert_to_tensor(action_k), axis=-1)
-
-        # print(obs)
-        # print(action_prob_k)
-        # print(adv_k)
-        # print(action_k)
-
+        # DONT ADD ANYTHING NOT TENSORFLOW HERE, otherwise tape gets all weird i think
         with tf.GradientTape() as tape:
 
             action_prob_current = self.give_action_prob(obs)
