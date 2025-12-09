@@ -1,8 +1,7 @@
 import tensorflow as tf
 import numpy as np
 from model.cnn import define_model
-
-CLIPNORM = 0.5
+from main import GRADNORM, EPSCLIP
 
 ##
 ## Actor network
@@ -53,7 +52,6 @@ class Actor:
         action_prob_k, 
         adv_k,
         action_k,
-        eps
     ) -> None:
         # DONT ADD ANYTHING NOT TENSORFLOW HERE, otherwise tape gets all weird i think
         with tf.GradientTape() as tape:
@@ -65,7 +63,7 @@ class Actor:
             action_prob_current = tf.gather(action_prob_current,action_k, batch_dims=1)
 
             # clip using tensorflow to try and speed up this monstrosity
-            clip = tf.where(adv_k>=0,(1 + eps) * adv_k, (1 - eps) * adv_k )
+            clip = tf.where(adv_k>=0,(1 + EPSCLIP) * adv_k, (1 - EPSCLIP) * adv_k )
 
             x = tf.where(action_prob_k >0, action_prob_current / action_prob_k, 0)
 
@@ -81,6 +79,6 @@ class Actor:
 
         gradients = tape.gradient(loss, self.cnn.trainable_variables)
 
-        grad_clipped, global_norm = tf.clip_by_global_norm(gradients, CLIPNORM)
+        grad_clipped, global_norm = tf.clip_by_global_norm(gradients, GRADNORM)
 
         optimiser.apply_gradients(zip(grad_clipped, self.cnn.trainable_variables)) # type: ignore

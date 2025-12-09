@@ -1,8 +1,7 @@
 import gymnasium as gym
 import tensorflow as tf
 from model.cnn import define_model
-
-CLIPNORM = 0.5
+from main import GRADNORM
 
 ##
 ## Critic network
@@ -38,7 +37,7 @@ class Critic:
         self, 
         optimiser,
         obs,
-        rtg
+        rtg,
     ) -> None:
 
         with tf.GradientTape() as tape:
@@ -58,6 +57,6 @@ class Critic:
 
         gradients = tape.gradient(loss, self.cnn.trainable_variables)
         
-        grad_clipped, global_norm = tf.clip_by_global_norm(gradients, CLIPNORM)
+        grad_clipped, global_norm = tf.clip_by_global_norm(gradients, GRADNORM)
 
         optimiser.apply_gradients(zip(grad_clipped, self.cnn.trainable_variables)) # type: ignore
