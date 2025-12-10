@@ -2,6 +2,7 @@ import gymnasium as gym
 from keras import optimizers
 import matplotlib.pyplot as plt
 import ale_py
+import numpy as np
 
 # from mods
 from model.agent import AgentPPO
@@ -11,116 +12,140 @@ from model.critic import Critic
 ##
 ## Main running constants
 ##
-GAME = "LunarLander-v3"  # "ALE/Boxing-v5"
-GAMEARGS =  {} #{"obs_type": "ram"}
-EPOCHSPERCYCLE = 5 # 3
+GAME = "LunarLander-v3" # "ALE/Boxing-v5"
+EPOCHSPERCYCLE = 3 # 3
 # i.e how many sets of trajectories we sample under one 
 CYCLES = 1000
-EPISODESPERCYCLE = 1
+EPISODESPERCYCLE = 10
 SOLUTIONTHRESHOLD = 200 # 99
 
 # plotting stuff
 PLOT = True
-FIGURENAME = "LunarV1"
+FIGURENAME = "LunarV2"
 
 ##
 ## PPO hyperparameters
-##
-# GAE threashold - this has some bias variance tradeoff implications
-TDLAMBDA = 0.95
-# Return discount
+# - Threshold to clip gradients by global norm
+# - GAE threashold - has some bias variance tradeoff implications
+# - NOT EPS GREEDY - this EPSCLIP the clipping threshold 
+# - Return discount duh
+TDLAMBDA = 0.90
 DISCOUNT = 0.99
-# THIS IS NOT EPS GREEDY - this is the clipping threshold 
 EPSCLIP = 0.2
-# Threshold to clip gradients by global norm
 GRADNORM = 0.5
+ENTROPY = 0.0005
+
+# toggles
+USEGAE = True
+USEADV = False
+USEENTROPY = True
 
 # CNN hyperparameters
 CONVOLUTIONS = False
 ACTORCONVFILTERS = 32
-ACTORDENSEUNITS = 128
+ACTORDENSEUNITS = 256
 CRITICCONVFILTERS = 32
-CRITICDENSEUNITS = 256
+CRITICDENSEUNITS = 512
 
 # DONT use more than 100 for any of the attari games itll go OOM (probably)
 BATCHSIZE = 64
 
 if __name__ == "__main__":
     # start single env to get dimensions just to make like easier for changing games
-    env = gym.make(GAME, kwargs=GAMEARGS)
-    observation, info = env.reset(seed=21)
+    env = gym.make(GAME)
+    observation, info = env.reset()
     dimensions = observation.shape
     move_total = env.action_space.n   # type: ignore
     env.close()
 
     print(f"dims: {dimensions}, action_space: {move_total} ")
 
+    actor = Actor(
+        dimensions=dimensions, 
+        regression=False,
+        total_moves=move_total,
+        conv = CONVOLUTIONS,
+        conv_filters=ACTORCONVFILTERS,
+        dense_units=ACTORDENSEUNITS,
+        eps_clip=EPSCLIP,
+        gradnorm=GRADNORM,
+        entropy= ENTROPY
+    )
+
+    critic = Critic(
+        dimensions=dimensions, 
+        regression=True,
+        total_moves=move_total,
+        conv = CONVOLUTIONS,
+        conv_filters=CRITICCONVFILTERS,
+        dense_units=CRITICDENSEUNITS,
+        gradnorm=GRADNORM
+    ) 
+
     # agent constructor
     agent = AgentPPO(
         d_size = EPISODESPERCYCLE,
         buffer_depth=0, 
-
-        actor=Actor(dimensions=dimensions, 
-                    regression=False,
-                    total_moves=move_total,
-                    conv = CONVOLUTIONS,
-                    conv_filters=ACTORCONVFILTERS,
-                    dense_units=ACTORDENSEUNITS,
-                    ), 
-
-        critic=Critic(dimensions=dimensions, 
-                      regression=True,
-                      total_moves=move_total,
-                      conv = CONVOLUTIONS,
-                    conv_filters=CRITICCONVFILTERS,
-                    dense_units=CRITICDENSEUNITS
-                    ), 
-
+        actor= actor,
+        critic= critic,
         discount = DISCOUNT, 
         epsilon = EPSCLIP,
         td_lambda = TDLAMBDA
     )
 
-    lr = 0.00025
-    # optimizers.schedules.ExponentialDecay(
-    #         0.00025,
-    #         10000000,
-    #         0.95,
-    # )
-    
-    actor_opt = optimizers.Adam(learning_rate = lr, ema_momentum=0.9) # type: ignore
-    critic_opt = optimizers.Adam(learning_rate = lr, ema_momentum=0.9) # type: ignore
-
     # setup envs to be parallel - cant use the atari version for ram observation
-    # envs = [gym.make("LunarLander-v3") for _ in range(EPISODESPERCYCLE)]
-    envs = [gym.make(GAME, kwargs=GAMEARGS) for _ in range(EPISODESPERCYCLE)]
+    # just using parallel envs was giving sample issues? model performance seemed to be worse than running single threaded
+    # so separately forcing random seeds per episode for each env
+    envs = [gym.make(GAME) for _ in range(EPISODESPERCYCLE)]
+    seeds = np.random.randint(0,4000000000,(CYCLES,EPISODESPERCYCLE))
 
-    rolling_store = []
-    # collects for how every many trajectory collection + training sessions
-    # cycle seemed like a decent name
-    rolling = 0
+
+    lr = 0.00025
+    act_opt = optimizers.AdamW(learning_rate = lr)
+    critic_opt = optimizers.AdamW(learning_rate = lr)
+    lr_decay = optimizers.schedules.CosineDecay(0.00025, 3000)
+
+    # note steps is for attempting learning rate scheduling
+    rolling_mean_store, rolling_mean, decay_start, total_updates, best_sample_mean, played_cycles = [], 0, 0, 0, 0, 0
+        
     for cycle in range(CYCLES):
-        print(f"======================================== Cycle {cycle} | Rolling mean: {rolling:.0f} ")
-        rolling_store.append(rolling)
-        agent.clear_data_store()
-        rolling = agent.train_cycle(
-            envs, 
-            actor_opt, 
-            critic_opt , 
-            epoch_num=EPOCHSPERCYCLE,
-            batch_size=BATCHSIZE
-        )
+        print(f" Sample Cycle {cycle} | =============================== | Mean [-10:]: {rolling_mean:.2f} | Total Grad Updates {total_updates:.0f}")
+        if best_sample_mean > 0.6*SOLUTIONTHRESHOLD:
+            decay_start = cycle
+            lr = lr_decay(((cycle - decay_start)/BATCHSIZE)*EPOCHSPERCYCLE)
+            print(f"lr Decayed -> {lr}")
 
-        if rolling > SOLUTIONTHRESHOLD:
-            print(f"Solution Reached (Mean [-50:] = {rolling:.2f})")
+        rolling_mean_store.append(rolling_mean)
+        agent.clear_data_store()
+
+        rolling_mean, steps, sample_mean = agent.train_cycle(
+            envs,
+            seeds[cycle], 
+            actor_opt=act_opt,
+            critic_opt=critic_opt,
+            epoch_num=EPOCHSPERCYCLE,
+            batch_size=BATCHSIZE,
+            use_gae = USEGAE,
+            use_adv= USEADV,
+            use_entropy=USEENTROPY,
+        )
+        total_updates += ((steps/BATCHSIZE) * EPOCHSPERCYCLE)
+        print(f" ===> Sample Mean {sample_mean} ")
+
+        if sample_mean >= best_sample_mean:
+            best_sample_mean = sample_mean
+
+        if rolling_mean > SOLUTIONTHRESHOLD:
+            print(f"Solution Reached (Mean [-10:] = {rolling_mean:.2f})")
+            played_cycles = cycle
             break
     
     # plot the trajectory undiscounted return
     if PLOT:
         plt.figure(figsize=(12, 6))
         plt.plot(agent.reward_history, label = "PPO")
-        plt.plot(rolling_store, label = "Rolling mean")
-        plt.hlines(y=SOLUTIONTHRESHOLD, xmin=0, xmax=CYCLES, colors='r', linestyles='-')
+        plt.plot(rolling_mean_store, label = "Rolling mean")
+        plt.hlines(y=SOLUTIONTHRESHOLD, xmin=0, xmax=played_cycles, colors='r', linestyles='-')
         plt.title("Lander Learning Curve")
         plt.xlabel("Learning Cycles")
         plt.ylabel("Return")

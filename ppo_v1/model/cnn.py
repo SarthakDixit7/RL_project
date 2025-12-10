@@ -17,7 +17,8 @@ def conv_block(
         return pooling
     else:
         return conv1
-    
+
+# Downscale the initialisation of the glorot normal for the output later for performance improvement (Andrychowicz et al., 2020)
 # https://datascience.stackexchange.com/questions/19019/custom-weight-initialization-in-keras
 SCALE = 0.01
 class ReducedGlorot(initializers.GlorotNormal):

@@ -1,7 +1,6 @@
 import gymnasium as gym
 import tensorflow as tf
 from model.cnn import define_model
-from main import GRADNORM
 
 ##
 ## Critic network
@@ -15,7 +14,9 @@ class Critic:
             conv,
             conv_filters,
             dense_units,
+            gradnorm,
         ) -> None:
+        self.gradnorm = gradnorm
 
         # CNN model
         self.cnn = define_model(
@@ -39,7 +40,7 @@ class Critic:
         obs,
         rtg,
     ) -> None:
-
+        # DONT ADD ANYTHING NOT TENSORFLOW HERE, otherwise tape gets all weird i think?
         with tf.GradientTape() as tape:
             value = self.predict(obs)
             diff = (value - rtg)
@@ -57,6 +58,6 @@ class Critic:
 
         gradients = tape.gradient(loss, self.cnn.trainable_variables)
         
-        grad_clipped, global_norm = tf.clip_by_global_norm(gradients, GRADNORM)
+        grad_clipped, _ = tf.clip_by_global_norm(gradients, self.gradnorm)
 
         optimiser.apply_gradients(zip(grad_clipped, self.cnn.trainable_variables)) # type: ignore

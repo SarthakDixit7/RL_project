@@ -4,6 +4,7 @@ from model.critic import Critic
 import tensorflow as tf
 from concurrent.futures import ThreadPoolExecutor
 import gymnasium as gym
+from operator import itemgetter
 
 ## 
 ## Initial PPO implementation 
@@ -25,7 +26,6 @@ class AgentPPO:
         ) -> None:
 
         # total store of experience - this is done as one big list for each category essentially
-        # indecies would be sample number
         self.stored_traj: dict[str, list] = {
             "observation": [] ,
             "reward": [] ,
@@ -49,11 +49,12 @@ class AgentPPO:
         self.actor: Actor = actor
         self.critic: Critic = critic
 
-        # parameters (epsilon is for 𝑔(𝜖,𝐴))
+        # parameters
         self.discount = discount
         self.epsilon = epsilon
         self.td_lambda = td_lambda
 
+        # for plotting
         self.reward_history = []
 
 #
@@ -63,18 +64,29 @@ class AgentPPO:
     def train_cycle(
             self,
             envs, 
+            seeds,
             actor_opt, 
             critic_opt, 
             epoch_num,
-            batch_size
+            batch_size,
+            use_gae,
+            use_adv,
+            use_entropy,
         ):
 
         # 1. data collection
-        with ThreadPoolExecutor(max_workers = self.d_size) as multi:
-            episodes = [multi.submit(self.collect_data, env) for env in envs]
-            data = [data.result() for data in episodes]
+        with ThreadPoolExecutor(max_workers = self.d_size) as executor:
+            # send of envs for data collection + store the futures too
+            episodes = [ executor.submit(self.collect_data, env, seeds[i] ,use_gae, use_adv) for i, env in enumerate(envs) ]
 
-        for episode in data:
+            # shove results into list so can sequentially add 
+            data = [ env.result() for env in episodes ]
+        
+        rewards = []
+        total_steps = 0
+
+        # add  in single thread to keep indecies matched
+        for episode,reward,steps in data:
             self.stored_traj["observation"].extend(episode["t_observation"])
             self.stored_traj["reward"].extend(episode["t_reward"])
             self.stored_traj["terminated"].extend(episode["t_terminated"])
@@ -85,40 +97,55 @@ class AgentPPO:
             self.stored_traj["action"].extend(episode["t_action"])
             self.stored_traj["action_prob"].extend(episode["t_action_prob"])
             self.stored_traj["critic_val"].extend(episode["t_critic_vals"])
+            rewards.append(reward)
+            total_steps+= steps
+
+        sample_mean = np.mean(rewards)
+        self.reward_history.append(sample_mean)
         
-        
-        # 2. train the agent
-        print("=> Training Agent")
+        samples = len(self.stored_traj["adv"])
+
+        indeces = np.arange(0,samples)
+
+        # 2. train the agent (this was steps 2 and 3 but can do both at the same time)
+        print("=> Training Agent \n")
         for epoch in range(epoch_num):
 
-            # print(f" epoch: {epoch}")
+            np.random.shuffle(indeces)
 
-            for batch in range(0, len(self.stored_traj["adv"]), batch_size):
+            for batch in range(0, samples, batch_size):
 
-                # ONLY CONVERT HERE OTHERWISE GPU MEMORY IS COOKED 
+                batch_indeces = indeces[batch: (batch+batch_size)].tolist()
+
+                # https://stackoverflow.com/questions/9106065/python-list-slicing-with-arbitrary-indices
+                batch_make = itemgetter(*batch_indeces)
+
+                # ONLY CONVERT HERE OTHERWISE GPU MEMORY IS COOKED (i think)
                 # gradient tape gets too big if not batch allocated to GPU
-                # also means both foward pass, backward pass and tape are all on GPU memory so relitively fast
+                # also means both foward pass, backward pass and tape are all on GPU memory so relitively fast?
                 #
                 # if we could get tf.Dataset working, prefetch and autotune would be vey nice 
-                # again expanding dims to match the concatenated observations, idk if this fixes calc problems but at least its consistent
+                obs = tf.concat(batch_make(self.stored_traj["observation"]), axis=0)
+
+                # expanding dims to match the concatenated observations, idk if this fixes calc problems but at least its consistent
                 # i.e 
                 # from 
                 # tf.Tensor(x1,x2, ...], shape=(35,), dtype=float32)
                 # to
                 # tf.Tensor([],[], ...], shape=(35, 1), dtype=float32)
-                obs = tf.concat(self.stored_traj["observation"][batch: (batch + batch_size) ], axis=0)
-                action_prob_k = tf.expand_dims(tf.convert_to_tensor(self.stored_traj["action_prob"][batch: (batch + batch_size) ]), axis=-1)
-                adv_k = tf.expand_dims(tf.convert_to_tensor(self.stored_traj["adv"][batch: (batch + batch_size) ]), axis=-1)
-                action_k = tf.expand_dims(tf.convert_to_tensor(self.stored_traj["action"][batch: (batch + batch_size)]), axis=-1)
-                rtg = tf.expand_dims(tf.convert_to_tensor(self.stored_traj["rtg"][batch: (batch + batch_size) ]),axis=-1)
-                
+                action_prob_k = tf.expand_dims(tf.convert_to_tensor(batch_make(self.stored_traj["action_prob"])), axis=-1)
+                adv_k = tf.expand_dims(tf.convert_to_tensor(batch_make(self.stored_traj["adv"])), axis=-1)
+                action_k = tf.expand_dims(tf.convert_to_tensor(batch_make(self.stored_traj["action"])), axis=-1)
+                rtg = tf.expand_dims(tf.convert_to_tensor(batch_make(self.stored_traj["rtg"])),axis=-1)
+
+
                 self.actor.train(
                     optimiser = actor_opt,
                     obs = obs, 
                     action_prob_k = action_prob_k, 
                     adv_k = adv_k, 
                     action_k = action_k,
-                    eps = self.epsilon
+                    include_entropy = use_entropy
                 )
 
                 self.critic.train(
@@ -127,10 +154,9 @@ class AgentPPO:
                     rtg, 
                 )
 
-        # mean = 0
-        # if len(self.reward_history)>10:
-        mean = np.mean(self.reward_history[-50:])
-        return mean
+
+        mean = np.mean(self.reward_history[-10:])
+        return mean, total_steps, sample_mean
 
 
 #
@@ -142,25 +168,26 @@ class AgentPPO:
 # Main collection function
 #
     def collect_data(
-            self, 
-            env
+            self,
+            env,
+            seed,
+            use_gae,
+            use_adv,
         ):
-
-        # For plotting average of samples
-        rewards = []
 
         #
         # run our sampling
         #
+
         # set current lists
         t_observation, t_reward, t_terminated, t_truncated, t_info, t_action, t_action_prob, t_critic_vals = [],[],[],[],[] ,[], [], []
 
         # reset env, fill in rest with placeholders
-        observation, info = env.reset()
+        observation, info = env.reset(seed= int(seed))
 
         # keep input to functinoal api CNN happy, need (1,x,y,z) and starting without multiple frames
         # observation = observation[np.newaxis,...,np.newaxis] /255.0
-        observation = observation[np.newaxis,:] #/255.0
+        observation = observation[np.newaxis,:] /255.0
         reward = 0.0
         terminated = False
         truncated = False
@@ -184,31 +211,29 @@ class AgentPPO:
             t_info.append(info)
             t_critic_vals.append(self.critic.predict(observation).numpy().item())
 
-            # print(f"State: {steps}, reward: {reward} terminal: {terminated}, truncated: {truncated}, action: {action}, probability {action_prob}")
-
             observation, reward, terminated, truncated, info = env.step(action)
+
             # observation = observation[np.newaxis,...,np.newaxis]/255.0
             observation = observation[np.newaxis,:] #/255.0
 
-            # append reward after we observed it so SAR stored at the same index
+            # append reward after we observed it so S,A,R stored at the same index (makes GAE slightly easier)
             t_reward.append(reward)
 
             total_reward += reward
             steps += 1
-        
-        #push final
-        
-        # add to cycle rewards
-        rewards.append(total_reward)
-        # print(f"Step: Terminal , reward: {reward} terminal: {terminated}, truncated: {truncated}, action: {action}, probability {action_prob}")
-        
-        # perform both rewards to go + advantage as soon as trajectory done 
-        # t_rtg, t_adv, t_critic_vals = self.rtg_adv(t_observation, t_reward)
-        t_rtg, t_adv, t_critic_vals = self.rtg_advgeneral(t_observation, t_reward,t_critic_vals)
+            
+        # perform both rewards to go + adv as soon as trajectory done
+        if use_gae:
+            t_rtg, t_adv = self.rtg_advgeneral(t_observation, t_reward,t_critic_vals)
+        elif use_adv:
+            t_rtg, t_adv = self.rtg_adv(t_observation, t_reward,t_critic_vals)
+
         # extend experience logs
 
         print(f"Episode Completed: Reward: {total_reward:.2f} | Steps: {len(t_reward)} ")
         
+        # put in dict to unpack and append outside this fn
+        # otherwise cant guarentee order of extend for all lists in parallel
         data = {
             "t_observation": t_observation,
             "t_reward": t_reward,
@@ -221,49 +246,69 @@ class AgentPPO:
             "t_action_prob": t_action_prob,
             "t_critic_vals": t_critic_vals,
         }
-        
-        mean =np.mean(rewards)
-        self.reward_history.append(mean)
-        # print(f"Iteration mean: {mean}")
-        return data
 
-#
-# helpers
-#
-
-#
-# Just so its not baked into another fn just in case
-# dont call this till a training cycle is complete 
-#
-    def clear_data_store(self) -> None:
-        self.stored_traj: dict[str, list] = {
-            "observation": [] ,
-            "reward": [] ,
-            "terminated": [] ,
-            "truncated": [] ,
-            "info": [] ,
-            "rtg": [],
-            "adv": [],
-            "action": [],
-            "action_prob": [],
-            "critic_val": []
-        }
-        
-        # print("Store deleted (no getting that back)")
+        return data, total_reward, steps
 
 #
 # Rewards to go and Advantage in one pass
 #
+    
+    def rtg_advgeneral(
+            self,
+            t_obs,
+            t_rw,
+            critic_vals,
+        ) -> tuple:
+        cumulative_reward = 0
+        steps = len(t_rw)
 
-    def rtg_adv(self, t_obs, t_rw):
+        # initialise rtg and advantage lists
+        rewards_tg = np.zeros(steps,dtype=np.float32)
+        gae = np.zeros(steps,dtype=np.float32)
+
+        # lots of 0 multiplication will happen before working backward
+        # numpy faster than using list tho so, block initialising better?
+        lambda_gamma = self.discount * self.td_lambda
+        exponents = np.arange(steps)
+        bases = np.full(steps,lambda_gamma)
+        lg_l = np.power(bases,exponents)
+
+        # Go back through episode to accumulate reward values
+        for time in reversed(range(steps)):
+            
+            # reward to go
+            # as we store s,a,r together at the same index
+            reward = t_rw[time]
+
+            rtg = reward + (self.discount * cumulative_reward)
+
+            rewards_tg[time] = rtg
+            cumulative_reward = rtg
+
+            delta = 0
+            # check if not at last recorded step (terminal doesnt have a value so just skip it )
+            if time < steps-1:
+                delta = reward + (self.discount * critic_vals[time + 1]) - critic_vals[time]
+            
+            if time< steps -2:
+                gae[time] = delta + ((self.discount * self.td_lambda) * gae[time +1])
+            else:
+                gae[time] = delta
+
+        return rewards_tg, gae
+
+# Works less well than GAE but still here
+    def rtg_adv(
+            self, 
+            t_obs, 
+            t_rw, 
+            critic_values
+        ) -> tuple :
         cumulative_reward = 0
 
         # initialise rtg and advantage lists
         rewards_tg = np.zeros(len(t_rw),dtype=np.float32)
         advantage = np.zeros(len(t_obs),dtype=np.float32)
-
-        # get all values from critic 
-        critic_values = [self.critic.predict(obs).numpy().item() for obs in t_obs]
 
         for time in reversed(range(len(t_rw))):
             
@@ -294,51 +339,24 @@ class AgentPPO:
         # print("\n critic_vals")
         # print(critic_values)
 
-        return rewards_tg, advantage , critic_values
+        return rewards_tg, advantage
     
-    def rtg_advgeneral(
-            self,
-            t_obs,
-            t_rw,
-            critic_vals,
-        ) -> tuple:
-        cumulative_reward = 0
-        steps = len(t_rw)
-
-        # initialise rtg and advantage lists
-        rewards_tg = np.zeros(steps,dtype=np.float32)
-        td = np.zeros(steps,dtype=np.float32)
-        gae = np.zeros(steps,dtype=np.float32)
-
-        # lots of 0 multiplication will happen before working backward
-        # numpy faster than using list tho so, block initialising better?
-        lambda_gamma = self.discount * self.td_lambda
-        exponents = np.arange(steps)
-        bases = np.full(steps,lambda_gamma)
-        lg_l = np.power(bases,exponents)
-
-        for time in reversed(range(steps)):
-            
-            # reward to go
-            # as we store s,a,r together at the same index
-            reward = t_rw[time]
-
-            rtg = reward + (self.discount * cumulative_reward)
-
-            rewards_tg[time] = rtg
-            cumulative_reward = rtg
-
-            disc = 0
-            # check if not at last recorded step (terminal doesnt have a value)
-            if time != (len(t_rw)-1):
-                disc = (self.discount * critic_vals[time + 1])
-            
-            # Since we store the reward with the action its now
-            td[time] = reward + disc - critic_vals[time]
-
-            # calculate elementwise (γλ)^l δV_t+l
-            t_gae = np.sum(lg_l * td)
-
-            gae[time] = t_gae
-
-        return rewards_tg, td , gae
+#
+# Just so its not baked into another fn just in case
+# dont call this till a training cycle is complete 
+#
+    def clear_data_store(self) -> None:
+        self.stored_traj: dict[str, list] = {
+            "observation": [] ,
+            "reward": [] ,
+            "terminated": [] ,
+            "truncated": [] ,
+            "info": [] ,
+            "rtg": [],
+            "adv": [],
+            "action": [],
+            "action_prob": [],
+            "critic_val": []
+        }
+        
+        # print("Store deleted (no getting that back)")

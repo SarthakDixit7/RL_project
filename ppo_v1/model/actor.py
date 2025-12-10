@@ -1,7 +1,6 @@
 import tensorflow as tf
 import numpy as np
 from model.cnn import define_model
-from main import GRADNORM, EPSCLIP
 
 ##
 ## Actor network
@@ -15,7 +14,14 @@ class Actor:
             conv,
             conv_filters,
             dense_units,
+            eps_clip,
+            gradnorm,
+            entropy,
         ) -> None:
+
+        self.eps = eps_clip
+        self.gradnorm = gradnorm
+        self.entropy = entropy
 
         # CNN model
         self.cnn = define_model(
@@ -28,7 +34,6 @@ class Actor:
         )
 
     # Note choose action uses numpy as thats whats used for collection
-    # the action prob is used inside the gpu tf portions so thats fine to return a tf tensor
     def choose_action(self, state) -> tuple:
         
         probabilities = tf.reshape((self.cnn(state)),[-1]).numpy()
@@ -52,33 +57,43 @@ class Actor:
         action_prob_k, 
         adv_k,
         action_k,
+        include_entropy
     ) -> None:
-        # DONT ADD ANYTHING NOT TENSORFLOW HERE, otherwise tape gets all weird i think
+        # DONT ADD ANYTHING NOT TENSORFLOW HERE, otherwise tape gets all weird i think?
         with tf.GradientTape() as tape:
 
-            action_prob_current = self.give_action_prob(obs)
+            # returns a tensor of probabilities (batch_size , num_actions)
+            action_probs = self.give_action_prob(obs)
 
-            # takes in probability array, creates compressed array only with the new action prob of action chosen by k
-            # the batching just tells it which axis to use (i think)
-            action_prob_current = tf.gather(action_prob_current,action_k, batch_dims=1)
+            # takes in probability tensor above, creates new tensor with only the prob of the selected action 
+            # so just probabilities[action] but for each probability vector (only of y put dims 1)
+            action_prob_current = tf.gather(action_probs, indices = action_k, batch_dims=1)
 
             # clip using tensorflow to try and speed up this monstrosity
-            clip = tf.where(adv_k>=0,(1 + EPSCLIP) * adv_k, (1 - EPSCLIP) * adv_k )
+            # cant use tf.cond elementwise but this basically uses a mask
+            # https://stackoverflow.com/questions/37912161/how-can-i-compute-element-wise-conditionals-on-batches-in-tensorflow
+            clip = tf.where(adv_k>=0,(1 + self.eps) * adv_k, (1 - self.eps) * adv_k )
 
             x = tf.where(action_prob_k >0, action_prob_current / action_prob_k, 0)
 
             imp_s = tf.multiply(adv_k , x)
 
+            loss = tf.minimum(imp_s , clip)
+
+            if include_entropy:
+                entropy_term = tf.multiply(action_probs, tf.multiply(tf.math.log(action_probs),-1))
+                weighted_entropy = tf.multiply(entropy_term, self.entropy)
+                loss = tf.add( loss , weighted_entropy)
+
             # minus cuz idk how to maximise
             # side note you need to use miltiply, just putting -1 in front was a very painful bug
-            loss = tf.multiply(tf.minimum(imp_s , clip),-1)
-
-            loss = tf.reduce_mean(loss)
+            loss = tf.reduce_mean(tf.multiply(loss,-1))
 
             # print(f"Actor Loss: {loss}")
 
         gradients = tape.gradient(loss, self.cnn.trainable_variables)
 
-        grad_clipped, global_norm = tf.clip_by_global_norm(gradients, GRADNORM)
+        # couldnt get clip by norm to work which is supposed to be faster 
+        grad_clipped, _ = tf.clip_by_global_norm(gradients, self.gradnorm) # type: ignore
 
         optimiser.apply_gradients(zip(grad_clipped, self.cnn.trainable_variables)) # type: ignore
