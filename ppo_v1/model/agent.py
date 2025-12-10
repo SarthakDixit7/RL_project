@@ -1,5 +1,7 @@
+import os
 import numpy as np
 from model.actor import Actor
+from model.cnn import ReducedGlorot
 from model.critic import Critic
 import tensorflow as tf
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +25,8 @@ class AgentPPO:
             discount: float,
             epsilon: float,
             td_lambda: float, 
+            targetKl: float = 0.06,
+            kl_coef: float = 1e-2,
         ) -> None:
 
         # total store of experience - this is done as one big list for each category essentially
@@ -53,6 +57,9 @@ class AgentPPO:
         self.discount = discount
         self.epsilon = epsilon
         self.td_lambda = td_lambda
+        
+        self.targetKl = targetKl
+        self.kl_coef = kl_coef
 
         # for plotting
         self.reward_history = []
@@ -72,6 +79,7 @@ class AgentPPO:
             use_gae,
             use_adv,
             use_entropy,
+            use_kl_early_stopping,
         ):
 
         # 1. data collection
@@ -111,6 +119,7 @@ class AgentPPO:
         print("=> Training Agent \n")
         for epoch in range(epoch_num):
 
+            stop_training = False
             np.random.shuffle(indeces)
 
             for batch in range(0, samples, batch_size):
@@ -138,14 +147,15 @@ class AgentPPO:
                 action_k = tf.expand_dims(tf.convert_to_tensor(batch_make(self.stored_traj["action"])), axis=-1)
                 rtg = tf.expand_dims(tf.convert_to_tensor(batch_make(self.stored_traj["rtg"])),axis=-1)
 
-
-                self.actor.train(
+                _, kl = self.actor.train(
                     optimiser = actor_opt,
                     obs = obs, 
                     action_prob_k = action_prob_k, 
                     adv_k = adv_k, 
                     action_k = action_k,
-                    include_entropy = use_entropy
+                    epsilon = self.epsilon,
+                    kl_coef = self.kl_coef,
+                    include_entropy = use_entropy,
                 )
 
                 self.critic.train(
@@ -153,9 +163,18 @@ class AgentPPO:
                     obs, 
                     rtg, 
                 )
+                
+                if use_kl_early_stopping and kl > self.targetKl:
+                    print(f" Early stopping at epoch {epoch} batch {batch} due to reaching max KL ")
+                    stop_training = True
+                    break
+            if stop_training:
+                break
+                
 
 
         mean = np.mean(self.reward_history[-10:])
+        self.clear_data_store()
         return mean, total_steps, sample_mean
 
 
@@ -340,6 +359,36 @@ class AgentPPO:
         # print(critic_values)
 
         return rewards_tg, advantage
+    
+    def saveModels(self, actor_path: str='trainedModels/null/actor_model', critic_path: str='trainedModels/null/critic_model', temp: str='placeholder', checkpoint: bool=False, saveCheckpoints: bool=False) -> None:
+        actorFolders = actor_path.rsplit('/')
+        if not checkpoint and saveCheckpoints:
+            os.rename(f'{actorFolders[0]}/{actorFolders[1]}/x', f'{actorFolders[0]}/{actorFolders[1]}/{temp}')
+            
+        currnet = ''
+        for folder in actorFolders[:-1]:
+            currnet += folder
+            if not os.path.exists(currnet):
+                os.makedirs(currnet)
+            currnet += '/'
+        
+        currnet = ''
+        criticFolders = critic_path.rsplit('/')
+        for folder in criticFolders[:-1]:
+            currnet += folder
+            if not os.path.exists(currnet):
+                os.makedirs(currnet)
+            currnet += '/'
+        
+        self.actor.cnn.save(f'{actor_path}.keras')
+        self.critic.cnn.save(f'{critic_path}.keras')
+        print(f" Models saved to {actor_path} and {critic_path} ")
+        
+    def loadModels(self, actor_path: str='trainedModels/actor_model', critic_path: str='trainedModels/critic_model') -> None:
+        custom_objects = {"ReducedGlorot": ReducedGlorot}
+        self.actor.cnn = tf.keras.models.load_model(f'{actor_path}.keras', custom_objects=custom_objects)
+        self.critic.cnn = tf.keras.models.load_model(f'{critic_path}.keras', custom_objects=custom_objects)
+        print(f" Models loaded from {actor_path} and {critic_path} ")
     
 #
 # Just so its not baked into another fn just in case

@@ -3,6 +3,7 @@ from keras import optimizers
 import matplotlib.pyplot as plt
 import ale_py
 import numpy as np
+import tensorflow as tf
 
 # from mods
 from model.agent import AgentPPO
@@ -15,13 +16,26 @@ from model.critic import Critic
 GAME = "LunarLander-v3" # "ALE/Boxing-v5"
 EPOCHSPERCYCLE = 3 # 3
 # i.e how many sets of trajectories we sample under one 
-CYCLES = 1000
+CYCLES = 5
 EPISODESPERCYCLE = 10
 SOLUTIONTHRESHOLD = 200 # 99
 
 # plotting stuff
 PLOT = True
 FIGURENAME = "LunarV2"
+
+# save stuff
+SAVE = True
+CHECKPOINTS = False
+CHECKPOINTFREQ = 250
+actorPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}actor_model"
+criticPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}critic_model"
+
+# load model
+# replace x with the mean score to load different models
+loadModel = False
+loadPathActor = f'trainedModels/{GAME}/-177/actor_model'
+loadPathCritic = f'trainedModels/{GAME}/-177/critic_model'
 
 ##
 ## PPO hyperparameters
@@ -50,6 +64,33 @@ CRITICDENSEUNITS = 512
 # DONT use more than 100 for any of the attari games itll go OOM (probably)
 BATCHSIZE = 64
 
+class CustomLRSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
+    def __init__(self, initLR, warmupSteps, totalSteps):
+        super().__init__()
+        self.lr = initLR
+        self.initLR = initLR
+        self.warmupSteps = warmupSteps
+        self.totalSteps = max(1, totalSteps)
+    def __call__(self, step):
+        step = tf.cast(step, tf.float32)
+        w = tf.cast(self.warmupSteps, tf.float32)
+        t = tf.cast(self.totalSteps, tf.float32)
+
+        warmup = tf.minimum(1.0, step / tf.maximum(1.0, w))
+        decaySteps = tf.maximum(1.0, t - w)
+        decayProgress = tf.clip_by_value((step - w) / decaySteps, 0.0, 1.0)
+        decay = 1.0 - decayProgress
+        
+        self.lr = self.initLR * warmup * decay
+
+        return self.lr
+
+    def __str__(self):
+        return f"CustomLRSchedule(initLR={self.initLR}, warmupSteps={self.warmupSteps}, totalSteps={self.totalSteps}), currentLR={self.lr}"
+
+def makeLRScheduler(initLR, warmupSteps, totalUpdates):
+    return CustomLRSchedule(initLR, warmupSteps, totalUpdates)
+
 if __name__ == "__main__":
     # start single env to get dimensions just to make like easier for changing games
     env = gym.make(GAME)
@@ -59,6 +100,7 @@ if __name__ == "__main__":
     env.close()
 
     print(f"dims: {dimensions}, action_space: {move_total} ")
+
 
     actor = Actor(
         dimensions=dimensions, 
@@ -92,31 +134,43 @@ if __name__ == "__main__":
         epsilon = EPSCLIP,
         td_lambda = TDLAMBDA
     )
+    
+    if loadModel:
+        agent.loadModels(actor_path=loadPathActor, critic_path=loadPathCritic)
 
     # setup envs to be parallel - cant use the atari version for ram observation
     # just using parallel envs was giving sample issues? model performance seemed to be worse than running single threaded
     # so separately forcing random seeds per episode for each env
     envs = [gym.make(GAME) for _ in range(EPISODESPERCYCLE)]
-    seeds = np.random.randint(0,4000000000,(CYCLES,EPISODESPERCYCLE))
-
-
+    rng = np.random.default_rng()
+    seeds = rng.integers(low=0,high=4000000000, size=(CYCLES,EPISODESPERCYCLE), dtype=np.uint32)
+    
     lr = 0.00025
-    act_opt = optimizers.AdamW(learning_rate = lr)
-    critic_opt = optimizers.AdamW(learning_rate = lr)
-    lr_decay = optimizers.schedules.CosineDecay(0.00025, 3000)
+    totalUpdates = CYCLES * EPOCHSPERCYCLE or 1 * EPOCHSPERCYCLE or 1
+    warmupSteps = min(1000, totalUpdates // 100)
+
+    totalSteps = max(1, totalUpdates)
+    lrSchedule = makeLRScheduler(lr, warmupSteps, totalSteps)
+    
+    weightDecay = 1e-4
+    
+    act_opt = optimizers.AdamW(learning_rate = lrSchedule, weight_decay=weightDecay)
+    critic_opt = optimizers.AdamW(learning_rate = lrSchedule, weight_decay=weightDecay)
 
     # note steps is for attempting learning rate scheduling
     rolling_mean_store, rolling_mean, decay_start, total_updates, best_sample_mean, played_cycles = [], 0, 0, 0, 0, 0
+    
+    doKlEStopping = False
         
     for cycle in range(CYCLES):
         print(f" Sample Cycle {cycle} | =============================== | Mean [-10:]: {rolling_mean:.2f} | Total Grad Updates {total_updates:.0f}")
-        if best_sample_mean > 0.6*SOLUTIONTHRESHOLD:
-            decay_start = cycle
-            lr = lr_decay(((cycle - decay_start)/BATCHSIZE)*EPOCHSPERCYCLE)
-            print(f"lr Decayed -> {lr}")
 
         rolling_mean_store.append(rolling_mean)
         agent.clear_data_store()
+        
+        if (cycle / CYCLES) > 0.15 and not doKlEStopping:
+            doKlEStopping = True
+            print(" KL Early Stopping Enabled ")
 
         rolling_mean, steps, sample_mean = agent.train_cycle(
             envs,
@@ -128,6 +182,7 @@ if __name__ == "__main__":
             use_gae = USEGAE,
             use_adv= USEADV,
             use_entropy=USEENTROPY,
+            use_kl_early_stopping=doKlEStopping,
         )
         total_updates += ((steps/BATCHSIZE) * EPOCHSPERCYCLE)
         print(f" ===> Sample Mean {sample_mean} ")
@@ -139,6 +194,22 @@ if __name__ == "__main__":
             print(f"Solution Reached (Mean [-10:] = {rolling_mean:.2f})")
             played_cycles = cycle
             break
+        
+        if cycle % CHECKPOINTFREQ == 0 and cycle > 0 and CHECKPOINTS and cycle != CYCLES -1:
+            checkpoint_actorPath = actorPath.replace('/check/', f'/{cycle}/')
+            checkpoint_criticPath = criticPath.replace('/check/', f'/{cycle}/')
+            agent.saveModels(actor_path=checkpoint_actorPath, critic_path=checkpoint_criticPath, checkpoint=True)
+            print(f"Checkpoint Models saved to {checkpoint_actorPath} and {checkpoint_criticPath} ")
+    
+    if SAVE:
+        if CHECKPOINTS:
+            replace = '/x/check/'
+        else:
+            replace = '/x/'
+        actorPath = actorPath.replace(replace, f'/{rolling_mean:.0f}/')
+        criticPath = criticPath.replace(replace, f'/{rolling_mean:.0f}/')
+        
+        agent.saveModels(actor_path=actorPath, critic_path=criticPath, temp=f'{rolling_mean:.0f}', checkpoint=False, saveCheckpoints=CHECKPOINTS)
     
     # plot the trajectory undiscounted return
     if PLOT:
@@ -152,4 +223,4 @@ if __name__ == "__main__":
         plt.legend()
         plt.grid()
         plt.plot()
-        plt.savefig(FIGURENAME)
+        plt.savefig(actorPath.replace('actor_model', FIGURENAME + '_learning_curve.png'))
