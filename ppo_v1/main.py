@@ -16,7 +16,7 @@ GAME = "LunarLander-v3" # "ALE/Boxing-v5"
 EPOCHSPERCYCLE = 3 # 3
 # i.e how many sets of trajectories we sample under one 
 CYCLES = 1000
-EPISODESPERCYCLE = 10
+EPISODESPERCYCLE = 10 # 10
 SOLUTIONTHRESHOLD = 200 # 99
 
 # plotting stuff
@@ -33,7 +33,7 @@ TDLAMBDA = 0.90
 DISCOUNT = 0.99
 EPSCLIP = 0.2
 GRADNORM = 0.5
-ENTROPY = 0.0005
+ENTROPY = 0.005
 
 # toggles
 USEGAE = True
@@ -48,7 +48,7 @@ CRITICCONVFILTERS = 32
 CRITICDENSEUNITS = 512
 
 # DONT use more than 100 for any of the attari games itll go OOM (probably)
-BATCHSIZE = 64
+BATCHSIZE = 64 # 64
 
 if __name__ == "__main__":
     # start single env to get dimensions just to make like easier for changing games
@@ -100,20 +100,18 @@ if __name__ == "__main__":
     seeds = np.random.randint(0,4000000000,(CYCLES,EPISODESPERCYCLE))
 
 
-    lr = 0.00025
+    # lr = 0.00025
+    lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=10000, alpha=0.0025, warmup_steps=500 , warmup_target=0.00025 )
+
     act_opt = optimizers.AdamW(learning_rate = lr)
     critic_opt = optimizers.AdamW(learning_rate = lr)
-    lr_decay = optimizers.schedules.CosineDecay(0.00025, 3000)
+    # lr_decay = optimizers.schedules.CosineDecay( initial_learning_rate= 0.00025, decay_steps=3000)
 
     # note steps is for attempting learning rate scheduling
     rolling_mean_store, rolling_mean, decay_start, total_updates, best_sample_mean, played_cycles = [], 0, 0, 0, 0, 0
         
     for cycle in range(CYCLES):
-        print(f" Sample Cycle {cycle} | =============================== | Mean [-10:]: {rolling_mean:.2f} | Total Grad Updates {total_updates:.0f}")
-        if best_sample_mean > 0.6*SOLUTIONTHRESHOLD:
-            decay_start = cycle
-            lr = lr_decay(((cycle - decay_start)/BATCHSIZE)*EPOCHSPERCYCLE)
-            print(f"lr Decayed -> {lr}")
+        print(f" Sample Cycle {cycle} | =============================== | GradUpdates: {total_updates:.0f} | lr(A,C) = {act_opt.learning_rate} : {critic_opt.learning_rate} | Mean [-50:]: {rolling_mean:.2f}")
 
         rolling_mean_store.append(rolling_mean)
         agent.clear_data_store()
@@ -136,7 +134,7 @@ if __name__ == "__main__":
             best_sample_mean = sample_mean
 
         if rolling_mean > SOLUTIONTHRESHOLD:
-            print(f"Solution Reached (Mean [-10:] = {rolling_mean:.2f})")
+            print(f"Solution Reached (Mean [-50:] = {rolling_mean:.2f})")
             played_cycles = cycle
             break
     
@@ -147,7 +145,7 @@ if __name__ == "__main__":
         plt.plot(rolling_mean_store, label = "Rolling mean")
         plt.hlines(y=SOLUTIONTHRESHOLD, xmin=0, xmax=played_cycles, colors='r', linestyles='-')
         plt.title("Lander Learning Curve")
-        plt.xlabel("Learning Cycles")
+        plt.xlabel("Total Episodes sampled (10 episodes per D sample)")
         plt.ylabel("Return")
         plt.legend()
         plt.grid()

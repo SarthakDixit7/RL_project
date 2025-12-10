@@ -82,7 +82,6 @@ class AgentPPO:
             # shove results into list so can sequentially add 
             data = [ env.result() for env in episodes ]
         
-        rewards = []
         total_steps = 0
 
         # add  in single thread to keep indecies matched
@@ -97,18 +96,15 @@ class AgentPPO:
             self.stored_traj["action"].extend(episode["t_action"])
             self.stored_traj["action_prob"].extend(episode["t_action_prob"])
             self.stored_traj["critic_val"].extend(episode["t_critic_vals"])
-            rewards.append(reward)
-            total_steps+= steps
+            self.reward_history.append(reward)
+            total_steps+= steps        
 
-        sample_mean = np.mean(rewards)
-        self.reward_history.append(sample_mean)
-        
+
         samples = len(self.stored_traj["adv"])
 
         indeces = np.arange(0,samples)
 
         # 2. train the agent (this was steps 2 and 3 but can do both at the same time)
-        print("=> Training Agent \n")
         for epoch in range(epoch_num):
 
             np.random.shuffle(indeces)
@@ -155,8 +151,10 @@ class AgentPPO:
                 )
 
 
-        mean = np.mean(self.reward_history[-10:])
-        return mean, total_steps, sample_mean
+        rolling_mean = np.mean(self.reward_history[-50:])
+        sample_mean = np.mean(self.reward_history[-10:])
+
+        return rolling_mean, total_steps, sample_mean
 
 
 #
