@@ -28,6 +28,19 @@ BORDERTHICKNESS = 0.5
 LINETHICKNESS = 0.6
 STYLE = "latex_style.mplstyle"
 
+# save stuff
+SAVE = True
+CHECKPOINTS = False
+CHECKPOINTFREQ = 250
+actorPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}actor_model"
+criticPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}critic_model"
+
+# load model
+# replace x with the mean score to load different models
+loadModel = False
+loadPathActor = f'trainedModels/{GAME}/-177/actor_model'
+loadPathCritic = f'trainedModels/{GAME}/-177/critic_model'
+
 ##
 ## PPO hyperparameters
 # - Threshold to clip gradients by global norm
@@ -97,12 +110,16 @@ if __name__ == "__main__":
         epsilon = EPSCLIP,
         td_lambda = TDLAMBDA
     )
+    
+    if loadModel:
+        agent.loadModels(actor_path=loadPathActor, critic_path=loadPathCritic)
 
     # setup envs to be parallel - cant use the atari version for ram observation
     # just using parallel envs was giving sample issues? model performance seemed to be worse than running single threaded
     # so separately forcing random seeds per episode for each env, as possibly playing same epsisode seed?
     envs = [gym.make(GAME, obs_type ='ram') for _ in range(EPISODESPERCYCLE)]
-    seeds = np.random.randint(0,4000000000,(CYCLES,EPISODESPERCYCLE))
+    rng = np.random.default_rng()
+    seeds = rng.integers(low=0,high=4000000000, size=(CYCLES,EPISODESPERCYCLE), dtype=np.uint32)
 
 
     # lr = 0.00025
@@ -114,7 +131,7 @@ if __name__ == "__main__":
     critic_opt = optimizers.AdamW(learning_rate = lr)
 
     # note steps is for attempting learning rate scheduling
-    rolling_mean_store, rolling_mean, decay_start, total_updates, best_sample_mean, played_cycles = [], 0, 0, 0, 0, 0
+    rolling_mean_store, mean_store, rolling_mean, decay_start, total_updates, best_sample_mean, played_cycles = [], [], 0, 0, 0, 0, 0
         
     for cycle in range(CYCLES):
         print(f" Sample Cycle {cycle} | =============================== | GradUpdates: {total_updates:.0f} | lr(A,C) = {act_opt.learning_rate} : {critic_opt.learning_rate} | Mean [-50:]: {rolling_mean:.2f}")
@@ -138,11 +155,29 @@ if __name__ == "__main__":
 
         if sample_mean >= best_sample_mean:
             best_sample_mean = sample_mean
+        
+        mean_store.append(sample_mean)
 
         if rolling_mean > SOLUTIONTHRESHOLD:
             print(f"Solution Reached (Mean [-50:] = {rolling_mean:.2f})")
             played_cycles = cycle
             break
+        
+        if cycle % CHECKPOINTFREQ == 0 and cycle > 0 and CHECKPOINTS and cycle != CYCLES -1:
+            checkpoint_actorPath = actorPath.replace('/check/', f'/{cycle}/')
+            checkpoint_criticPath = criticPath.replace('/check/', f'/{cycle}/')
+            agent.saveModels(actor_path=checkpoint_actorPath, critic_path=checkpoint_criticPath, checkpoint=True)
+            print(f"Checkpoint Models saved to {checkpoint_actorPath} and {checkpoint_criticPath} ")
+    
+    if SAVE:
+        if CHECKPOINTS:
+            replace = '/x/check/'
+        else:
+            replace = '/x/'
+        actorPath = actorPath.replace(replace, f'/{rolling_mean:.0f}/')
+        criticPath = criticPath.replace(replace, f'/{rolling_mean:.0f}/')
+        
+        agent.saveModels(actor_path=actorPath, critic_path=criticPath, temp=f'{rolling_mean:.0f}', checkpoint=False, saveCheckpoints=CHECKPOINTS)
 
     # plot the trajectory undiscounted return
     if PLOT:
@@ -166,6 +201,7 @@ if __name__ == "__main__":
         plt.figure(figsize = (width,height))
         plt.plot(agent.reward_history, label = r"PPO $\mu_{D_k}$", alpha = 0.9)
         plt.plot(rolling_mean_store, label = r"$\text{SMA}_{50}$", linewidth=1)
+        plt.plot(mean_store, label = r"$\mu_{D_k}$", alpha=0.5, linestyle='--')
         plt.hlines(y=SOLUTIONTHRESHOLD, xmin=0, xmax=played_cycles, colors='r', linestyles='--', linewidth=1, alpha= 0.9)
         plt.xlabel(f"Collection Iteration " +r"$D_k$, $k$ = "f"{EPISODESPERCYCLE}")
         plt.ylabel("Score")
