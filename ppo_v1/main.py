@@ -1,3 +1,4 @@
+import pickle
 import gymnasium as gym
 from keras import optimizers
 import matplotlib.pyplot as plt
@@ -113,6 +114,19 @@ if __name__ == "__main__":
     
     if loadModel:
         agent.loadModels(actor_path=loadPathActor, critic_path=loadPathCritic)
+        
+        filePath = actorPath.replace('actor_model', 'training_data.pkl')
+        
+        try:
+            with open(filePath, "rb") as f:
+                data = pickle.load(f)
+                rolling_mean_store = data.get("rolling_mean_store", [])
+                mean_store = data.get("mean_store", [])
+                step_intervals = data.get("step_intervals", [])
+                total_updates = data.get("total_updates", 0)
+                best_sample_mean = data.get("best_sample_mean", 0)
+        except FileNotFoundError:
+            rolling_mean_store, mean_store, step_intervals, rolling_mean, decay_start, total_updates, best_sample_mean, played_cycles = [], [], [], 0, 0, 0, 0, 0
 
     # setup envs to be parallel - cant use the atari version for ram observation
     # just using parallel envs was giving sample issues? model performance seemed to be worse than running single threaded
@@ -179,6 +193,21 @@ if __name__ == "__main__":
         criticPath = criticPath.replace(replace, f'/{rolling_mean:.0f}/')
         
         agent.saveModels(actor_path=actorPath, critic_path=criticPath, temp=f'{rolling_mean:.0f}', checkpoint=False, saveCheckpoints=CHECKPOINTS)
+        
+        # Save training data
+        training_data = {
+            "rolling_mean_store": rolling_mean_store,
+            "mean_store": mean_store,
+            "step_intervals": step_intervals,
+            "total_updates": total_updates,
+            "best_sample_mean": best_sample_mean,
+            "agent_reward_history": agent.reward_history,
+        }
+        
+        filePath = actorPath.replace('actor_model', 'training_data.pkl')
+        
+        with open(filePath, "wb") as f:
+            pickle.dump(training_data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     # plot the trajectory undiscounted return
     if PLOT:
