@@ -57,9 +57,11 @@ class AgentPPO:
         self.td_lambda = td_lambda
 
         # for plotting
-        self.reward_history = []
-        self.min_rewards = []
-        self.max_rewards = []
+        self.reward_history = [0]
+        self.step_history = [0]
+        self.total_steps = 0
+        self.rolling_mean_history = [0]
+        self.total_updates = 0
 
 #
 # Training "cycle"
@@ -76,7 +78,7 @@ class AgentPPO:
             use_gae,
             use_adv,
             use_entropy,
-        ):
+        ) -> tuple :
 
         # 1. data collection
         with ThreadPoolExecutor(max_workers = self.d_size) as executor:
@@ -104,13 +106,8 @@ class AgentPPO:
             rewards.append(reward)
             total_steps+= steps        
 
-        mins = np.min(rewards)
-        maxs = np.max(rewards)
-        self.min_rewards.append(mins)
-        self.max_rewards.append(maxs)
-
         sample_mean = np.mean(rewards)
-        self.reward_history.append(sample_mean)
+        self.reward_history.append(sample_mean) # type: ignore
 
 
         samples = len(self.stored_traj["adv"])
@@ -165,8 +162,14 @@ class AgentPPO:
 
 
         rolling_mean = np.mean(self.reward_history[-50:])
+        self.rolling_mean_history.append(rolling_mean) # type: ignore
 
-        return rolling_mean, total_steps, sample_mean
+        self.total_steps += total_steps
+        self.total_updates = ((self.total_steps/batch_size) *epoch_num)
+        self.step_history.append(self.total_steps)
+
+        return sample_mean, total_steps
+
 
 
 #
@@ -306,6 +309,7 @@ class AgentPPO:
             t_rw, 
             critic_values
         ) -> tuple :
+        
         cumulative_reward = 0
         steps = len(t_rw)
 
@@ -344,7 +348,16 @@ class AgentPPO:
 
         return rewards_tg, advantage
     
-    def saveModels(self, actor_path: str='trainedModels/null/actor_model', critic_path: str='trainedModels/null/critic_model', temp: str='placeholder', checkpoint: bool=False, saveCheckpoints: bool=False) -> None:
+    
+    def saveModels(
+        self, 
+        actor_path: str='trainedModels/null/actor_model',
+        critic_path: str='trainedModels/null/critic_model',
+        temp: str='placeholder',
+        checkpoint: bool=False,
+        saveCheckpoints: bool=False
+    ) -> None:
+
         actorFolders = actor_path.rsplit('/')
         if not checkpoint and saveCheckpoints:
             os.rename(f'{actorFolders[0]}/{actorFolders[1]}/x', f'{actorFolders[0]}/{actorFolders[1]}/{temp}')
@@ -367,11 +380,18 @@ class AgentPPO:
         self.actor.cnn.save(f'{actor_path}.keras')
         self.critic.cnn.save(f'{critic_path}.keras')
         print(f" Models saved to {actor_path} and {critic_path} ")
+
         
-    def loadModels(self, actor_path: str='trainedModels/actor_model', critic_path: str='trainedModels/critic_model') -> None:
+    def loadModels(
+        self, 
+        actor_path: str='trainedModels/actor_model', 
+        critic_path: str='trainedModels/critic_model'
+    ) -> None:
         custom_objects = {"ReducedGlorot": ReducedGlorot}
+
         self.actor.cnn = tf.keras.models.load_model(f'{actor_path}.keras', custom_objects=custom_objects)
         self.critic.cnn = tf.keras.models.load_model(f'{critic_path}.keras', custom_objects=custom_objects)
+
         print(f" Models loaded from {actor_path} and {critic_path} ")
     
 #

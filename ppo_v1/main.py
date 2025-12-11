@@ -18,11 +18,11 @@ EPOCHSPERCYCLE = 3 # 3
 # i.e how many sets of trajectories we sample under one 
 CYCLES = 2
 EPISODESPERCYCLE = 5 
-SOLUTIONTHRESHOLD = 80 # 90 -> best target
+SOLUTIONTHRESHOLD = 90 
 
 # plotting stuff
 PLOT = True
-FIGURENAME = "Boxing_v2"
+FIGURENAME = "Boxing_max_eps"
 LATEX = True
 DIAGRAMWIDTH = 397.48499
 BORDERTHICKNESS = 0.5
@@ -68,6 +68,10 @@ CRITICDENSEUNITS = 512
 
 # DONT use more than 100 for any of the attari games itll go OOM (probably)
 BATCHSIZE = 64 # 64
+
+
+
+
 
 if __name__ == "__main__":
     # start single env to get dimensions just to make like easier for changing games
@@ -140,20 +144,14 @@ if __name__ == "__main__":
     # these settings get ~72 (initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.0025, warmup_steps=1000 , warmup_target=0.00025)
     lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
 
-    act_opt = optimizers.AdamW(learning_rate = lr)
+    act_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
     
-    critic_opt = optimizers.AdamW(learning_rate = lr)
-
-    # note steps is for attempting learning rate scheduling
-    rolling_mean_store, mean_store, step_intervals, rolling_mean, decay_start, total_updates, best_sample_mean, played_cycles = [], [], [], 0, 0, 0, 0, 0
+    critic_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
         
     for cycle in range(CYCLES):
-        print(f" Sample Cycle {cycle} | =============================== | GradUpdates: {total_updates:.0f} | lr(A,C) = {act_opt.learning_rate} : {critic_opt.learning_rate} | Mean [-50:]: {rolling_mean:.2f}")
+        print(f"\n====================== Cycle {cycle} =========================")
 
-        rolling_mean_store.append(rolling_mean)
-        agent.clear_data_store()
-
-        rolling_mean, steps, sample_mean = agent.train_cycle(
+        sample_mean, steps = agent.train_cycle(
             envs,
             seeds[cycle], 
             actor_opt=act_opt,
@@ -164,17 +162,13 @@ if __name__ == "__main__":
             use_adv= USEADV,
             use_entropy=USEENTROPY,
         )
-        total_updates += ((steps/BATCHSIZE) * EPOCHSPERCYCLE)
-        print(f" ===> Sample Mean {sample_mean} , total steps this cycle: {steps} ")
 
-        if sample_mean >= best_sample_mean:
-            best_sample_mean = sample_mean
+        total_updates = ((agent.total_steps/BATCHSIZE) * EPOCHSPERCYCLE)
+        print(f"\n ===> Sample Mean {sample_mean} , total steps this cycle: {steps} ")
         
-        mean_store.append(sample_mean)
-        step_intervals.append(total_updates)
 
-        if rolling_mean > SOLUTIONTHRESHOLD:
-            print(f"Solution Reached (Mean [-50:] = {rolling_mean:.2f})")
+        if agent.rolling_mean_history[-1] > SOLUTIONTHRESHOLD:
+            print(f"Solution Reached (Mean [-50:] = {agent.rolling_mean_history[-1]:.2f})")
             played_cycles = cycle
             break
         
@@ -183,14 +177,20 @@ if __name__ == "__main__":
             checkpoint_criticPath = criticPath.replace('/check/', f'/{cycle}/')
             agent.saveModels(actor_path=checkpoint_actorPath, critic_path=checkpoint_criticPath, checkpoint=True)
             print(f"Checkpoint Models saved to {checkpoint_actorPath} and {checkpoint_criticPath} ")
+
+        agent.clear_data_store()
+
+        print(f" ===> Steps: {agent.step_history[-1]} | GradUpdates: {total_updates:.0f} | lr = {critic_opt.learning_rate} | Mean [-50:]: {agent.rolling_mean_history[-1]:.2f}")
+
     
     if SAVE:
+        rolling = agent.rolling_mean_history[-1]
         if CHECKPOINTS:
             replace = '/x/check/'
         else:
             replace = '/x/'
-        actorPath = actorPath.replace(replace, f'/{rolling_mean:.0f}/')
-        criticPath = criticPath.replace(replace, f'/{rolling_mean:.0f}/')
+        actorPath = actorPath.replace(replace, f'/{rolling:.0f}/')
+        criticPath = criticPath.replace(replace, f'/{rolling:.0f}/')
         
         agent.saveModels(actor_path=actorPath, critic_path=criticPath, temp=f'{rolling_mean:.0f}', checkpoint=False, saveCheckpoints=CHECKPOINTS)
         
@@ -229,12 +229,11 @@ if __name__ == "__main__":
             height = width/golden
 
         plt.figure(figsize = (width,height))
-        plt.plot(step_intervals, agent.reward_history, label = r"PPO $\mu_{D_k}$", alpha = 0.9)
-        plt.plot(step_intervals, rolling_mean_store, label = r"$\text{SMA}_{50}$", linewidth=1)
-        plt.plot(step_intervals, mean_store, label = r"$\mu_{D_k}$", alpha=0.5, linestyle='--')
-        plt.hlines(y=SOLUTIONTHRESHOLD, xmin=0, xmax=played_cycles, colors='r', linestyles='--', linewidth=1, alpha= 0.9)
-        plt.xlabel(f"Collection Iteration " +r"$D_k$, $k$ = "f"{EPISODESPERCYCLE}")
-        plt.ylabel("Score")
+        plt.plot(agent.step_history, agent.reward_history, label = r"PPO $\mu_{D_k}$", alpha = 0.9)
+        plt.plot(agent.step_history, agent.rolling_mean_history, label = r"$\text{SMA}_{50}$", linewidth=1)
+        plt.hlines(y=SOLUTIONTHRESHOLD, xmin=0, xmax= agent.total_steps, colors='r', linestyles='--', linewidth=1, alpha= 0.9)
+        plt.xlabel(f"Step total")
+        plt.ylabel("Episodic Reward")
         plt.legend(loc = 'lower right')
         plt.grid()
         plt.plot()
