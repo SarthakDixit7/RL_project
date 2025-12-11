@@ -36,8 +36,11 @@ class Actor:
     # Note choose action uses numpy as thats whats used for collection
     def choose_action(self, state) -> tuple:
         
+        # remove extra tensor dimension as this is only used when playing
+        # flatten into numpy to stop weird tf numpy stuff
         probabilities = tf.reshape((self.cnn(state)),[-1]).numpy()
 
+        # pick 
         action = np.random.choice(len(probabilities), p=probabilities)
 
         probability = probabilities[action]

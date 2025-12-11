@@ -12,16 +12,21 @@ from model.critic import Critic
 ##
 ## Main running constants
 ##
-GAME = "LunarLander-v3" # "ALE/Boxing-v5"
+GAME = "ALE/Boxing-v5"
 EPOCHSPERCYCLE = 3 # 3
 # i.e how many sets of trajectories we sample under one 
 CYCLES = 1000
-EPISODESPERCYCLE = 10 # 10
-SOLUTIONTHRESHOLD = 200 # 99
+EPISODESPERCYCLE = 5 
+SOLUTIONTHRESHOLD = 80 # 90 -> best target
 
 # plotting stuff
 PLOT = True
-FIGURENAME = "LunarV2"
+FIGURENAME = "Boxing_v2"
+LATEX = True
+DIAGRAMWIDTH = 397.48499
+BORDERTHICKNESS = 0.5
+LINETHICKNESS = 0.6
+STYLE = "latex_style.mplstyle"
 
 ##
 ## PPO hyperparameters
@@ -52,7 +57,7 @@ BATCHSIZE = 64 # 64
 
 if __name__ == "__main__":
     # start single env to get dimensions just to make like easier for changing games
-    env = gym.make(GAME)
+    env = gym.make(GAME, obs_type ='ram')
     observation, info = env.reset()
     dimensions = observation.shape
     move_total = env.action_space.n   # type: ignore
@@ -95,17 +100,18 @@ if __name__ == "__main__":
 
     # setup envs to be parallel - cant use the atari version for ram observation
     # just using parallel envs was giving sample issues? model performance seemed to be worse than running single threaded
-    # so separately forcing random seeds per episode for each env
-    envs = [gym.make(GAME) for _ in range(EPISODESPERCYCLE)]
+    # so separately forcing random seeds per episode for each env, as possibly playing same epsisode seed?
+    envs = [gym.make(GAME, obs_type ='ram') for _ in range(EPISODESPERCYCLE)]
     seeds = np.random.randint(0,4000000000,(CYCLES,EPISODESPERCYCLE))
 
 
     # lr = 0.00025
-    lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=10000, alpha=0.0025, warmup_steps=500 , warmup_target=0.00025 )
+    # these settings get ~72 (initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.0025, warmup_steps=1000 , warmup_target=0.00025)
+    lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
 
     act_opt = optimizers.AdamW(learning_rate = lr)
+    
     critic_opt = optimizers.AdamW(learning_rate = lr)
-    # lr_decay = optimizers.schedules.CosineDecay( initial_learning_rate= 0.00025, decay_steps=3000)
 
     # note steps is for attempting learning rate scheduling
     rolling_mean_store, rolling_mean, decay_start, total_updates, best_sample_mean, played_cycles = [], 0, 0, 0, 0, 0
@@ -137,17 +143,33 @@ if __name__ == "__main__":
             print(f"Solution Reached (Mean [-50:] = {rolling_mean:.2f})")
             played_cycles = cycle
             break
-    
+
     # plot the trajectory undiscounted return
     if PLOT:
-        plt.figure(figsize=(12, 6))
-        plt.plot(agent.reward_history, label = "PPO")
-        plt.plot(rolling_mean_store, label = "Rolling mean")
-        plt.hlines(y=SOLUTIONTHRESHOLD, xmin=0, xmax=played_cycles, colors='r', linestyles='-')
-        plt.title("Lander Learning Curve")
-        plt.xlabel("Total Episodes sampled (10 episodes per D sample)")
-        plt.ylabel("Return")
-        plt.legend()
+        plt.rcParams['grid.linewidth'] = BORDERTHICKNESS
+        plt.rcParams['xtick.major.width'] = BORDERTHICKNESS
+        plt.rcParams['ytick.major.width'] = BORDERTHICKNESS
+        plt.rcParams['axes.linewidth'] = BORDERTHICKNESS
+        plt.rcParams['lines.linewidth'] = LINETHICKNESS
+
+        width = 20
+        height = 10
+        
+        if LATEX: # https://duetosymmetry.com/code/latex-mpl-fig-tips/
+            plt.rcParams.update({'text.usetex':True})
+            plt.style.use(STYLE)
+            pt = 1./72.27
+            golden = (1 + 5 ** 0.5) / 2
+            width = DIAGRAMWIDTH * pt
+            height = width/golden
+
+        plt.figure(figsize = (width,height))
+        plt.plot(agent.reward_history, label = r"PPO $\mu_{D_k}$", alpha = 0.9)
+        plt.plot(rolling_mean_store, label = r"$\text{SMA}_{50}$", linewidth=1)
+        plt.hlines(y=SOLUTIONTHRESHOLD, xmin=0, xmax=played_cycles, colors='r', linestyles='--', linewidth=1, alpha= 0.9)
+        plt.xlabel(f"Collection Iteration " +r"$D_k$, $k$ = "f"{EPISODESPERCYCLE}")
+        plt.ylabel("Score")
+        plt.legend(loc = 'lower right')
         plt.grid()
         plt.plot()
         plt.savefig(FIGURENAME)
