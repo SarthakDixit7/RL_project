@@ -15,7 +15,7 @@ from model.critic import Critic
 GAME = "ALE/Boxing-v5"
 EPOCHSPERCYCLE = 3 # 3
 # i.e how many sets of trajectories we sample under one 
-CYCLES = 1000
+CYCLES = 2
 EPISODESPERCYCLE = 5 
 SOLUTIONTHRESHOLD = 80 # 90 -> best target
 
@@ -29,7 +29,7 @@ LINETHICKNESS = 0.6
 STYLE = "latex_style.mplstyle"
 
 # save stuff
-SAVE = True
+SAVE = False
 CHECKPOINTS = False
 CHECKPOINTFREQ = 250
 actorPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}actor_model"
@@ -131,7 +131,7 @@ if __name__ == "__main__":
     critic_opt = optimizers.AdamW(learning_rate = lr)
 
     # note steps is for attempting learning rate scheduling
-    rolling_mean_store, mean_store, rolling_mean, decay_start, total_updates, best_sample_mean, played_cycles = [], [], 0, 0, 0, 0, 0
+    rolling_mean_store, mean_store, step_intervals, rolling_mean, decay_start, total_updates, best_sample_mean, played_cycles = [], [], [], 0, 0, 0, 0, 0
         
     for cycle in range(CYCLES):
         print(f" Sample Cycle {cycle} | =============================== | GradUpdates: {total_updates:.0f} | lr(A,C) = {act_opt.learning_rate} : {critic_opt.learning_rate} | Mean [-50:]: {rolling_mean:.2f}")
@@ -151,12 +151,13 @@ if __name__ == "__main__":
             use_entropy=USEENTROPY,
         )
         total_updates += ((steps/BATCHSIZE) * EPOCHSPERCYCLE)
-        print(f" ===> Sample Mean {sample_mean} ")
+        print(f" ===> Sample Mean {sample_mean} , total steps this cycle: {steps} ")
 
         if sample_mean >= best_sample_mean:
             best_sample_mean = sample_mean
         
         mean_store.append(sample_mean)
+        step_intervals.append(total_updates)
 
         if rolling_mean > SOLUTIONTHRESHOLD:
             print(f"Solution Reached (Mean [-50:] = {rolling_mean:.2f})")
@@ -199,9 +200,9 @@ if __name__ == "__main__":
             height = width/golden
 
         plt.figure(figsize = (width,height))
-        plt.plot(agent.reward_history, label = r"PPO $\mu_{D_k}$", alpha = 0.9)
-        plt.plot(rolling_mean_store, label = r"$\text{SMA}_{50}$", linewidth=1)
-        plt.plot(mean_store, label = r"$\mu_{D_k}$", alpha=0.5, linestyle='--')
+        plt.plot(step_intervals, agent.reward_history, label = r"PPO $\mu_{D_k}$", alpha = 0.9)
+        plt.plot(step_intervals, rolling_mean_store, label = r"$\text{SMA}_{50}$", linewidth=1)
+        plt.plot(step_intervals, mean_store, label = r"$\mu_{D_k}$", alpha=0.5, linestyle='--')
         plt.hlines(y=SOLUTIONTHRESHOLD, xmin=0, xmax=played_cycles, colors='r', linestyles='--', linewidth=1, alpha= 0.9)
         plt.xlabel(f"Collection Iteration " +r"$D_k$, $k$ = "f"{EPISODESPERCYCLE}")
         plt.ylabel("Score")
