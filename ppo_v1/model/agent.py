@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from model.actor import Actor
 from model.critic import Critic
@@ -5,6 +6,7 @@ import tensorflow as tf
 from concurrent.futures import ThreadPoolExecutor
 import gymnasium as gym
 from operator import itemgetter
+from model.cnn import ReducedGlorot
 
 ## 
 ## Initial PPO implementation 
@@ -341,6 +343,36 @@ class AgentPPO:
         # print(critic_values)
 
         return rewards_tg, advantage
+    
+    def saveModels(self, actor_path: str='trainedModels/null/actor_model', critic_path: str='trainedModels/null/critic_model', temp: str='placeholder', checkpoint: bool=False, saveCheckpoints: bool=False) -> None:
+        actorFolders = actor_path.rsplit('/')
+        if not checkpoint and saveCheckpoints:
+            os.rename(f'{actorFolders[0]}/{actorFolders[1]}/x', f'{actorFolders[0]}/{actorFolders[1]}/{temp}')
+            
+        currnet = ''
+        for folder in actorFolders[:-1]:
+            currnet += folder
+            if not os.path.exists(currnet):
+                os.makedirs(currnet)
+            currnet += '/'
+        
+        currnet = ''
+        criticFolders = critic_path.rsplit('/')
+        for folder in criticFolders[:-1]:
+            currnet += folder
+            if not os.path.exists(currnet):
+                os.makedirs(currnet)
+            currnet += '/'
+        
+        self.actor.cnn.save(f'{actor_path}.keras')
+        self.critic.cnn.save(f'{critic_path}.keras')
+        print(f" Models saved to {actor_path} and {critic_path} ")
+        
+    def loadModels(self, actor_path: str='trainedModels/actor_model', critic_path: str='trainedModels/critic_model') -> None:
+        custom_objects = {"ReducedGlorot": ReducedGlorot}
+        self.actor.cnn = tf.keras.models.load_model(f'{actor_path}.keras', custom_objects=custom_objects)
+        self.critic.cnn = tf.keras.models.load_model(f'{critic_path}.keras', custom_objects=custom_objects)
+        print(f" Models loaded from {actor_path} and {critic_path} ")
     
 #
 # Just so its not baked into another fn just in case
