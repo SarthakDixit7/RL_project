@@ -16,8 +16,8 @@ from model.critic import Critic
 GAME = "ALE/Boxing-v5"
 EPOCHSPERCYCLE = 3 # 3
 # i.e how many sets of trajectories we sample under one 
-CYCLES = 2000
-EPISODESPERCYCLE = 5 
+CYCLES = 3
+EPISODESPERCYCLE = 5
 SOLUTIONTHRESHOLD = 90 
 
 # plotting stuff
@@ -32,7 +32,7 @@ STYLE = "latex_style.mplstyle"
 # save stuff
 SAVE = True
 CHECKPOINTS = False
-CHECKPOINTFREQ = 100
+CHECKPOINTFREQ = 500000
 actorPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}actor_model"
 criticPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}critic_model"
 
@@ -68,8 +68,6 @@ CRITICDENSEUNITS = 512
 
 # DONT use more than 100 for any of the attari games itll go OOM (probably)
 BATCHSIZE = 64 # 64
-
-
 
 
 
@@ -116,6 +114,22 @@ if __name__ == "__main__":
         td_lambda = TDLAMBDA
     )
     
+    # setup envs to be parallel - cant use the atari version for ram observation
+    # just using parallel envs was giving sample issues? model performance seemed to be worse than running single threaded
+    # so separately forcing random seeds per episode for each env, as possibly playing same epsisode seed?
+    envs = [gym.make(GAME, obs_type ='ram') for _ in range(EPISODESPERCYCLE)]
+
+    lr = 0.00025
+    # these settings get ~72 (initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.0025, warmup_steps=1000 , warmup_target=0.00025)
+    # lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
+
+    act_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
+    critic_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
+    
+    rng = np.random.default_rng()
+    game_seeds = rng.integers(low=0,high=4000000000, size=(CYCLES,EPISODESPERCYCLE), dtype=np.uint32)
+
+    # try loading models
     if loadModel:
         agent.loadModels(actor_path=loadPathActor, critic_path=loadPathCritic)
         
@@ -131,21 +145,6 @@ if __name__ == "__main__":
                 game_seeds = data.get("game_seeds", [])
         except FileNotFoundError:
             print("No store data found")
-            rng = np.random.default_rng()
-            game_seeds = rng.integers(low=0,high=4000000000, size=(CYCLES,EPISODESPERCYCLE), dtype=np.uint32)
-
-    # setup envs to be parallel - cant use the atari version for ram observation
-    # just using parallel envs was giving sample issues? model performance seemed to be worse than running single threaded
-    # so separately forcing random seeds per episode for each env, as possibly playing same epsisode seed?
-    envs = [gym.make(GAME, obs_type ='ram') for _ in range(EPISODESPERCYCLE)]
-
-    lr = 0.00025
-    # these settings get ~72 (initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.0025, warmup_steps=1000 , warmup_target=0.00025)
-    # lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
-
-    act_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
-    critic_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
-    
 
     ##
     ## Main Training loop
@@ -174,7 +173,7 @@ if __name__ == "__main__":
             played_cycles = cycle
             break
         
-        if cycle % CHECKPOINTFREQ == 0 and cycle > 0 and CHECKPOINTS and cycle != CYCLES -1:
+        if agent.total_steps % CHECKPOINTFREQ == 0 and agent.total_steps > 0 and CHECKPOINTS and cycle != agent.total_steps -steps:
             checkpoint_actorPath = actorPath.replace('/check/', f'/{cycle}/')
             checkpoint_criticPath = criticPath.replace('/check/', f'/{cycle}/')
             agent.saveModels(actor_path=checkpoint_actorPath, critic_path=checkpoint_criticPath, checkpoint=True)
@@ -197,7 +196,6 @@ if __name__ == "__main__":
         
         agent.saveModels(actor_path=actorPath, critic_path=criticPath, temp=f'{agent.rolling_mean_history[-1]:.0f}', checkpoint=False, saveCheckpoints=CHECKPOINTS)
     
-
 
     # Save training data
     training_data = {

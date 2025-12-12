@@ -136,7 +136,7 @@ class AgentPPO:
         # 1. data collection
         with ThreadPoolExecutor(max_workers = self.d_size) as executor:
             # send of envs for data collection + store the futures too
-            episodes = [ executor.submit(self.__collect_data, env, seeds[i] ,use_gae, use_adv) for i, env in enumerate(envs) ]
+            episodes = [executor.submit(self.__collect_data, env, seeds[i] ,use_gae, use_adv) for i, env in enumerate(envs) ]
 
             # shove results into list so can sequentially add 
             data = [ env.result() for env in episodes ]
@@ -321,6 +321,8 @@ class AgentPPO:
         # track total
         total_reward = 0
         steps = 0
+
+        print("running EP")
 
         # run untill the episode ends
         while not terminated and not truncated:
