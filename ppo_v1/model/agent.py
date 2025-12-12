@@ -56,6 +56,8 @@ class AgentPPO:
 
         # for plotting
         self.reward_history = []
+        self.min_rewards = []
+        self.max_rewards = []
 
 #
 # Training "cycle"
@@ -82,8 +84,8 @@ class AgentPPO:
             # shove results into list so can sequentially add 
             data = [ env.result() for env in episodes ]
         
-        rewards = []
         total_steps = 0
+        rewards = []
 
         # add  in single thread to keep indecies matched
         for episode,reward,steps in data:
@@ -98,17 +100,22 @@ class AgentPPO:
             self.stored_traj["action_prob"].extend(episode["t_action_prob"])
             self.stored_traj["critic_val"].extend(episode["t_critic_vals"])
             rewards.append(reward)
-            total_steps+= steps
+            total_steps+= steps        
+
+        mins = np.min(rewards)
+        maxs = np.max(rewards)
+        self.min_rewards.append(mins)
+        self.max_rewards.append(maxs)
 
         sample_mean = np.mean(rewards)
         self.reward_history.append(sample_mean)
-        
+
+
         samples = len(self.stored_traj["adv"])
 
         indeces = np.arange(0,samples)
 
         # 2. train the agent (this was steps 2 and 3 but can do both at the same time)
-        print("=> Training Agent \n")
         for epoch in range(epoch_num):
 
             np.random.shuffle(indeces)
@@ -155,8 +162,9 @@ class AgentPPO:
                 )
 
 
-        mean = np.mean(self.reward_history[-10:])
-        return mean, total_steps, sample_mean
+        rolling_mean = np.mean(self.reward_history[-50:])
+
+        return rolling_mean, total_steps, sample_mean
 
 
 #
@@ -214,7 +222,7 @@ class AgentPPO:
             observation, reward, terminated, truncated, info = env.step(action)
 
             # observation = observation[np.newaxis,...,np.newaxis]/255.0
-            observation = observation[np.newaxis,:] #/255.0
+            observation = observation[np.newaxis,:] /255.0
 
             # append reward after we observed it so S,A,R stored at the same index (makes GAE slightly easier)
             t_reward.append(reward)
@@ -224,9 +232,9 @@ class AgentPPO:
             
         # perform both rewards to go + adv as soon as trajectory done
         if use_gae:
-            t_rtg, t_adv = self.rtg_advgeneral(t_observation, t_reward,t_critic_vals)
+            t_rtg, t_adv = self.rtg_advgeneral(t_reward,t_critic_vals)
         elif use_adv:
-            t_rtg, t_adv = self.rtg_adv(t_observation, t_reward,t_critic_vals)
+            t_rtg, t_adv = self.rtg_adv(t_reward,t_critic_vals)
 
         # extend experience logs
 
@@ -250,12 +258,10 @@ class AgentPPO:
         return data, total_reward, steps
 
 #
-# Rewards to go and Advantage in one pass
+# GAE calculation
 #
-    
     def rtg_advgeneral(
             self,
-            t_obs,
             t_rw,
             critic_vals,
         ) -> tuple:
@@ -265,13 +271,6 @@ class AgentPPO:
         # initialise rtg and advantage lists
         rewards_tg = np.zeros(steps,dtype=np.float32)
         gae = np.zeros(steps,dtype=np.float32)
-
-        # lots of 0 multiplication will happen before working backward
-        # numpy faster than using list tho so, block initialising better?
-        lambda_gamma = self.discount * self.td_lambda
-        exponents = np.arange(steps)
-        bases = np.full(steps,lambda_gamma)
-        lg_l = np.power(bases,exponents)
 
         # Go back through episode to accumulate reward values
         for time in reversed(range(steps)):
@@ -288,6 +287,8 @@ class AgentPPO:
             delta = 0
             # check if not at last recorded step (terminal doesnt have a value so just skip it )
             if time < steps-1:
+                # calculate td value, using same as adv
+                # 𝑟𝑡 + 𝛾𝑉(𝑠𝑡+1) − 𝑉(𝑠𝑡)
                 delta = reward + (self.discount * critic_vals[time + 1]) - critic_vals[time]
             
             if time< steps -2:
@@ -300,17 +301,17 @@ class AgentPPO:
 # Works less well than GAE but still here
     def rtg_adv(
             self, 
-            t_obs, 
             t_rw, 
             critic_values
         ) -> tuple :
         cumulative_reward = 0
+        steps = len(t_rw)
 
         # initialise rtg and advantage lists
-        rewards_tg = np.zeros(len(t_rw),dtype=np.float32)
-        advantage = np.zeros(len(t_obs),dtype=np.float32)
+        rewards_tg = np.zeros(steps,dtype=np.float32)
+        advantage = np.zeros(steps,dtype=np.float32)
 
-        for time in reversed(range(len(t_rw))):
+        for time in reversed(range(steps)):
             
             # reward to go
             # as we store s,a,r together at the same index

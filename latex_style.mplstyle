@@ -1,0 +1,15 @@
+text.usetex: True
+
+# whichever fonts etc
+text.latex.preamble: \usepackage[T1]{fontenc} \usepackage{amsmath} \usepackage[scaled=.90]{helvet} \renewcommand{\familydefault}{\rmdefault}
+
+# font stuff
+font.family: serif
+font.size: 10
+axes.labelsize: 10
+legend.fontsize: 10
+xtick.labelsize: 10
+ytick.labelsize: 10
+
+savefig.bbox: tight
+savefig.format: pdf
