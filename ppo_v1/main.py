@@ -16,7 +16,7 @@ from model.critic import Critic
 GAME = "ALE/Boxing-v5"
 EPOCHSPERCYCLE = 3 # 3
 # i.e how many sets of trajectories we sample under one 
-CYCLES = 2
+CYCLES = 2000
 EPISODESPERCYCLE = 5 
 SOLUTIONTHRESHOLD = 90 
 
@@ -30,9 +30,9 @@ LINETHICKNESS = 0.6
 STYLE = "latex_style.mplstyle"
 
 # save stuff
-SAVE = False
+SAVE = True
 CHECKPOINTS = False
-CHECKPOINTFREQ = 250
+CHECKPOINTFREQ = 100
 actorPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}actor_model"
 criticPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}critic_model"
 
@@ -74,6 +74,7 @@ BATCHSIZE = 64 # 64
 
 
 if __name__ == "__main__":
+
     # start single env to get dimensions just to make like easier for changing games
     env = gym.make(GAME, obs_type ='ram')
     observation, info = env.reset()
@@ -108,7 +109,6 @@ if __name__ == "__main__":
     # agent constructor
     agent = AgentPPO(
         d_size = EPISODESPERCYCLE,
-        buffer_depth=0, 
         actor= actor,
         critic= critic,
         discount = DISCOUNT, 
@@ -124,36 +124,38 @@ if __name__ == "__main__":
         try:
             with open(filePath, "rb") as f:
                 data = pickle.load(f)
-                rolling_mean_store = data.get("rolling_mean_store", [])
-                mean_store = data.get("mean_store", [])
-                step_intervals = data.get("step_intervals", [])
-                total_updates = data.get("total_updates", 0)
-                best_sample_mean = data.get("best_sample_mean", 0)
+                agent.rolling_mean_history = data.get("rolling_mean_history", [])
+                agent.reward_history = data.get("reward_history", [])
+                agent.step_history = data.get("step_history", [])
+                agent.total_updates = data.get("total_updates", 0)
+                game_seeds = data.get("game_seeds", [])
         except FileNotFoundError:
-            rolling_mean_store, mean_store, step_intervals, rolling_mean, decay_start, total_updates, best_sample_mean, played_cycles = [], [], [], 0, 0, 0, 0, 0
+            print("No store data found")
+            rng = np.random.default_rng()
+            game_seeds = rng.integers(low=0,high=4000000000, size=(CYCLES,EPISODESPERCYCLE), dtype=np.uint32)
 
     # setup envs to be parallel - cant use the atari version for ram observation
     # just using parallel envs was giving sample issues? model performance seemed to be worse than running single threaded
     # so separately forcing random seeds per episode for each env, as possibly playing same epsisode seed?
     envs = [gym.make(GAME, obs_type ='ram') for _ in range(EPISODESPERCYCLE)]
-    rng = np.random.default_rng()
-    seeds = rng.integers(low=0,high=4000000000, size=(CYCLES,EPISODESPERCYCLE), dtype=np.uint32)
 
-
-    # lr = 0.00025
+    lr = 0.00025
     # these settings get ~72 (initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.0025, warmup_steps=1000 , warmup_target=0.00025)
-    lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
+    # lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
 
     act_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
-    
     critic_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
-        
+    
+
+    ##
+    ## Main Training loop
+    ##  
     for cycle in range(CYCLES):
-        print(f"\n====================== Cycle {cycle} =========================")
+        print(f"\n====================== Cycle {cycle} =========================\n")
 
         sample_mean, steps = agent.train_cycle(
             envs,
-            seeds[cycle], 
+            game_seeds[cycle], 
             actor_opt=act_opt,
             critic_opt=critic_opt,
             epoch_num=EPOCHSPERCYCLE,
@@ -179,10 +181,11 @@ if __name__ == "__main__":
             print(f"Checkpoint Models saved to {checkpoint_actorPath} and {checkpoint_criticPath} ")
 
         agent.clear_data_store()
-
         print(f" ===> Steps: {agent.step_history[-1]} | GradUpdates: {total_updates:.0f} | lr = {critic_opt.learning_rate} | Mean [-50:]: {agent.rolling_mean_history[-1]:.2f}")
 
-    
+
+
+    # Save models + overwrite checkpoints
     if SAVE:
         rolling = agent.rolling_mean_history[-1]
         if CHECKPOINTS:
@@ -192,22 +195,25 @@ if __name__ == "__main__":
         actorPath = actorPath.replace(replace, f'/{rolling:.0f}/')
         criticPath = criticPath.replace(replace, f'/{rolling:.0f}/')
         
-        agent.saveModels(actor_path=actorPath, critic_path=criticPath, temp=f'{rolling_mean:.0f}', checkpoint=False, saveCheckpoints=CHECKPOINTS)
-        
-        # Save training data
-        training_data = {
-            "rolling_mean_store": rolling_mean_store,
-            "mean_store": mean_store,
-            "step_intervals": step_intervals,
-            "total_updates": total_updates,
-            "best_sample_mean": best_sample_mean,
-            "agent_reward_history": agent.reward_history,
-        }
-        
-        filePath = actorPath.replace('actor_model', 'training_data.pkl')
-        
-        with open(filePath, "wb") as f:
-            pickle.dump(training_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        agent.saveModels(actor_path=actorPath, critic_path=criticPath, temp=f'{agent.rolling_mean_history[-1]:.0f}', checkpoint=False, saveCheckpoints=CHECKPOINTS)
+    
+
+
+    # Save training data
+    training_data = {
+        "rolling_mean_store": agent.rolling_mean_history,
+        "reward_history": agent.reward_history,
+        "step_history": agent.step_history,
+        "total_updates": agent.total_updates,
+        "agent_reward_history": agent.reward_history,
+        "game_seeds": game_seeds
+    }
+    
+    filePath = actorPath.replace('actor_model', 'training_data.pkl')
+    
+    with open(filePath, "wb") as f:
+        pickle.dump(training_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+
 
     # plot the trajectory undiscounted return
     if PLOT:

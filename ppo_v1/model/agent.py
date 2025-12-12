@@ -13,13 +13,69 @@ from model.cnn import ReducedGlorot
 ## Initial hyperparameter suggenstions taken from https://arxiv.org/pdf/2006.05990
 ##
 class AgentPPO:
-#
-# Constructor
-#
+    """
+    Main PPO agent Class with GAE + Entropy
+
+    Attributes
+    ----------
+    stored_traj: dict[str, list]
+        - All relevant stored trajectory information. These are stored as lists and are extended with each episodes complete trajectory
+        - Note: correct indecies are currently ensured by extending single threaded after all episodes are complete
+        - {
+            "observation": [] ,
+            "reward": [] ,
+            "terminated": [] ,
+            "truncated": [] ,
+            "info": [] ,
+            "rtg": [],
+            "adv": [],
+            "action": [],
+            "action_prob": [],
+            "critic_val": []
+        }
+    d_size: int
+        - Number of trajectories samples during each iteration of k (or in our case cycles)
+    actor: Actor
+        - Constructed Actor class containing its network and update methods
+    critic: Critic
+        - Constructed Critic class containing its network and update methods
+    discount: float 
+        - Designated discount 𝛾 value for calculating dicounted sum of returns
+    epsilon: float
+        - Clipping threshold designated in PPO clip
+    td_lambda: float
+        - GAE weighting term
+    reward_history: list
+        - Total mean episodic reward store, across samples collected each cycle
+    step_history: list
+        - Cumulative sum of all played steps after each cycle correspoding to the reward mean
+    total_steps: int
+        - Counter to hold cumulative steps 
+    rolling_mean_history: list
+        - complete rolling mean history at each step_value
+    total_updates: int
+        - Total gradient updates observed
+
+    Methods
+    -------   
+    train_cycle
+        - Main training cycle for the model (the loop indexed by k in the psudocode)
+        - Available toggles for GAE or TD(1)
+        - Experience collection is multithreaded with number of collected trajectories dependant on self.d_size
+    save_models
+        - Function to store curent weights in .keras file
+    load_models
+        - Function to set current Actor and Critic to some stored models
+        - This is useful if training stagnates and the learning rate needs to be manually modified OR for testing purposes
+    clear_data
+        - Resets the stored_traj attribute to allow for a new set of training data to be collected
+    """
+##################################################################################################################################################
+## Constructor
+##################################################################################################################################################
     def __init__(
             self ,
             d_size: int ,
-            buffer_depth: int ,
             actor: Actor,
             critic: Critic,
             discount: float,
@@ -42,31 +98,28 @@ class AgentPPO:
         }
 
         self.d_size: int  = d_size
-        self.buffer_depth: int = buffer_depth
-
-        # for logging progress (if we decide to lol)
-        self.best_x: int = 0
 
         # Models
         self.actor: Actor = actor
         self.critic: Critic = critic
 
         # parameters
-        self.discount = discount
-        self.epsilon = epsilon
-        self.td_lambda = td_lambda
+        self.discount: float = discount
+        self.epsilon: float = epsilon
+        self.td_lambda: float = td_lambda
 
         # for plotting
-        self.reward_history = [0]
-        self.step_history = [0]
-        self.total_steps = 0
-        self.rolling_mean_history = [0]
-        self.total_updates = 0
+        self.reward_history: list = [0]
+        self.step_history: list = [0]
+        self.total_steps: int = 0
+        self.rolling_mean_history: list = [0]
+        self.total_updates: int = 0
 
-#
-# Training "cycle"
-# collects how many trajectories are specified, then stores
-#
+
+##################################################################################################################################################
+## Public Methods
+##################################################################################################################################################
+
     def train_cycle(
             self,
             envs, 
@@ -83,7 +136,7 @@ class AgentPPO:
         # 1. data collection
         with ThreadPoolExecutor(max_workers = self.d_size) as executor:
             # send of envs for data collection + store the futures too
-            episodes = [ executor.submit(self.collect_data, env, seeds[i] ,use_gae, use_adv) for i, env in enumerate(envs) ]
+            episodes = [ executor.submit(self.__collect_data, env, seeds[i] ,use_gae, use_adv) for i, env in enumerate(envs) ]
 
             # shove results into list so can sequentially add 
             data = [ env.result() for env in episodes ]
@@ -170,17 +223,74 @@ class AgentPPO:
 
         return sample_mean, total_steps
 
+   
+    def saveModels(
+        self, 
+        actor_path: str='trainedModels/null/actor_model',
+        critic_path: str='trainedModels/null/critic_model',
+        temp: str='placeholder',
+        checkpoint: bool=False,
+        saveCheckpoints: bool=False
+    ) -> None:
+
+        actorFolders = actor_path.rsplit('/')
+        if not checkpoint and saveCheckpoints:
+            os.rename(f'{actorFolders[0]}/{actorFolders[1]}/x', f'{actorFolders[0]}/{actorFolders[1]}/{temp}')
+            
+        currnet = ''
+        for folder in actorFolders[:-1]:
+            currnet += folder
+            if not os.path.exists(currnet):
+                os.makedirs(currnet)
+            currnet += '/'
+        
+        currnet = ''
+        criticFolders = critic_path.rsplit('/')
+        for folder in criticFolders[:-1]:
+            currnet += folder
+            if not os.path.exists(currnet):
+                os.makedirs(currnet)
+            currnet += '/'
+        
+        self.actor.cnn.save(f'{actor_path}.keras')
+        self.critic.cnn.save(f'{critic_path}.keras')
+        print(f" Models saved to {actor_path} and {critic_path} ")
+
+        
+    def loadModels(
+        self, 
+        actor_path: str='trainedModels/actor_model', 
+        critic_path: str='trainedModels/critic_model'
+    ) -> None:
+        custom_objects = {"ReducedGlorot": ReducedGlorot}
+
+        self.actor.cnn = tf.keras.models.load_model(f'{actor_path}.keras', custom_objects=custom_objects) # type: ignore
+        self.critic.cnn = tf.keras.models.load_model(f'{critic_path}.keras', custom_objects=custom_objects) # type: ignore
+
+        print(f" Models loaded from {actor_path} and {critic_path} ")
+    
+
+    def clear_data_store(self) -> None:
+        self.stored_traj: dict[str, list] = {
+            "observation": [] ,
+            "reward": [] ,
+            "terminated": [] ,
+            "truncated": [] ,
+            "info": [] ,
+            "rtg": [],
+            "adv": [],
+            "action": [],
+            "action_prob": [],
+            "critic_val": []
+        }
+        
 
 
-#
-# 1. Data collection
-# Initial training run to fill out D_k trajectories
-#
+##################################################################################################################################################
+## Private Methods
+##################################################################################################################################################
 
-#
-# Main collection function
-#
-    def collect_data(
+    def __collect_data(
             self,
             env,
             seed,
@@ -237,9 +347,9 @@ class AgentPPO:
             
         # perform both rewards to go + adv as soon as trajectory done
         if use_gae:
-            t_rtg, t_adv = self.rtg_advgeneral(t_reward,t_critic_vals)
+            t_rtg, t_adv = self.__rtg_advgeneral(t_reward,t_critic_vals)
         elif use_adv:
-            t_rtg, t_adv = self.rtg_adv(t_reward,t_critic_vals)
+            t_rtg, t_adv = self.__rtg_adv(t_reward,t_critic_vals)
 
         # extend experience logs
 
@@ -265,7 +375,7 @@ class AgentPPO:
 #
 # GAE calculation
 #
-    def rtg_advgeneral(
+    def __rtg_advgeneral(
             self,
             t_rw,
             critic_vals,
@@ -304,7 +414,7 @@ class AgentPPO:
         return rewards_tg, gae
 
 # Works less well than GAE but still here
-    def rtg_adv(
+    def __rtg_adv(
             self, 
             t_rw, 
             critic_values
@@ -347,69 +457,3 @@ class AgentPPO:
         # print(critic_values)
 
         return rewards_tg, advantage
-    
-    
-    def saveModels(
-        self, 
-        actor_path: str='trainedModels/null/actor_model',
-        critic_path: str='trainedModels/null/critic_model',
-        temp: str='placeholder',
-        checkpoint: bool=False,
-        saveCheckpoints: bool=False
-    ) -> None:
-
-        actorFolders = actor_path.rsplit('/')
-        if not checkpoint and saveCheckpoints:
-            os.rename(f'{actorFolders[0]}/{actorFolders[1]}/x', f'{actorFolders[0]}/{actorFolders[1]}/{temp}')
-            
-        currnet = ''
-        for folder in actorFolders[:-1]:
-            currnet += folder
-            if not os.path.exists(currnet):
-                os.makedirs(currnet)
-            currnet += '/'
-        
-        currnet = ''
-        criticFolders = critic_path.rsplit('/')
-        for folder in criticFolders[:-1]:
-            currnet += folder
-            if not os.path.exists(currnet):
-                os.makedirs(currnet)
-            currnet += '/'
-        
-        self.actor.cnn.save(f'{actor_path}.keras')
-        self.critic.cnn.save(f'{critic_path}.keras')
-        print(f" Models saved to {actor_path} and {critic_path} ")
-
-        
-    def loadModels(
-        self, 
-        actor_path: str='trainedModels/actor_model', 
-        critic_path: str='trainedModels/critic_model'
-    ) -> None:
-        custom_objects = {"ReducedGlorot": ReducedGlorot}
-
-        self.actor.cnn = tf.keras.models.load_model(f'{actor_path}.keras', custom_objects=custom_objects)
-        self.critic.cnn = tf.keras.models.load_model(f'{critic_path}.keras', custom_objects=custom_objects)
-
-        print(f" Models loaded from {actor_path} and {critic_path} ")
-    
-#
-# Just so its not baked into another fn just in case
-# dont call this till a training cycle is complete 
-#
-    def clear_data_store(self) -> None:
-        self.stored_traj: dict[str, list] = {
-            "observation": [] ,
-            "reward": [] ,
-            "terminated": [] ,
-            "truncated": [] ,
-            "info": [] ,
-            "rtg": [],
-            "adv": [],
-            "action": [],
-            "action_prob": [],
-            "critic_val": []
-        }
-        
-        # print("Store deleted (no getting that back)")
