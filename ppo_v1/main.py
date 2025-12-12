@@ -16,13 +16,14 @@ from model.critic import Critic
 GAME = "ALE/Boxing-v5"
 EPOCHSPERCYCLE = 3 # 3
 # i.e how many sets of trajectories we sample under one 
-CYCLES = 3
+CYCLES = 2000
 EPISODESPERCYCLE = 5
 SOLUTIONTHRESHOLD = 90 
+COLLECTIONSIZE = 512
 
 # plotting stuff
 PLOT = True
-FIGURENAME = "Boxing_max_eps"
+FIGURENAME = "Boxing_Not_cos"
 LATEX = True
 DIAGRAMWIDTH = 397.48499
 BORDERTHICKNESS = 0.5
@@ -32,9 +33,13 @@ STYLE = "latex_style.mplstyle"
 # save stuff
 SAVE = True
 CHECKPOINTS = False
-CHECKPOINTFREQ = 500000
+CHECKPOINTFREQ = 53400
 actorPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}actor_model"
 criticPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}critic_model"
+
+# test parameters
+TESTFREQ = 2560 * 40
+RUNSPERTEST = 20
 
 # load model
 # replace x with the mean score to load different models
@@ -107,6 +112,7 @@ if __name__ == "__main__":
     # agent constructor
     agent = AgentPPO(
         d_size = EPISODESPERCYCLE,
+        collection_size=COLLECTIONSIZE,
         actor= actor,
         critic= critic,
         discount = DISCOUNT, 
@@ -117,17 +123,19 @@ if __name__ == "__main__":
     # setup envs to be parallel - cant use the atari version for ram observation
     # just using parallel envs was giving sample issues? model performance seemed to be worse than running single threaded
     # so separately forcing random seeds per episode for each env, as possibly playing same epsisode seed?
-    envs = [gym.make(GAME, obs_type ='ram') for _ in range(EPISODESPERCYCLE)]
+    envs = gym.make_vec(GAME, num_envs=EPISODESPERCYCLE, vectorization_mode="async",obs_type = "ram")
 
-    lr = 0.00025
+
+    # lr = 0.00025
     # these settings get ~72 (initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.0025, warmup_steps=1000 , warmup_target=0.00025)
-    # lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
+    lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=80000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
 
     act_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
     critic_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
     
     rng = np.random.default_rng()
-    game_seeds = rng.integers(low=0,high=4000000000, size=(CYCLES,EPISODESPERCYCLE), dtype=np.uint32)
+    # seeds stored in matrix, where [game generation seed , the rest -> epoch shuffle seeds]
+    game_seeds = rng.integers(low=0,high=4000000000, size=(CYCLES,EPOCHSPERCYCLE + 1), dtype=np.uint32)
 
     # try loading models
     if loadModel:
@@ -150,7 +158,7 @@ if __name__ == "__main__":
     ## Main Training loop
     ##  
     for cycle in range(CYCLES):
-        print(f"\n====================== Cycle {cycle} =========================\n")
+        # print(f"\n====================== Cycle {cycle} =========================\n")
 
         sample_mean, steps = agent.train_cycle(
             envs,
@@ -165,22 +173,28 @@ if __name__ == "__main__":
         )
 
         total_updates = ((agent.total_steps/BATCHSIZE) * EPOCHSPERCYCLE)
-        print(f"\n ===> Sample Mean {sample_mean} , total steps this cycle: {steps} ")
-        
+        # print(f"\n ===>  , total steps this cycle: {steps} ")
+        print(f" ===> Steps: {agent.step_history[-1]} | Sample: {cycle} | GradUpdates: {total_updates:.0f} | lr = {critic_opt.learning_rate} | Sample Mean {sample_mean} | Test Rolling Mean: {agent.rolling_mean_history[-1]:.2f}")
+
 
         if agent.rolling_mean_history[-1] > SOLUTIONTHRESHOLD:
             print(f"Solution Reached (Mean [-50:] = {agent.rolling_mean_history[-1]:.2f})")
             played_cycles = cycle
             break
+            
+        if agent.total_steps % TESTFREQ == 0 and agent.total_steps > 0:
+            test_envs = [gym.make(GAME, obs_type ='ram') for _ in range(RUNSPERTEST)]
+            agent.test(test_envs)
+            for env in test_envs:
+                env.close()
         
-        if agent.total_steps % CHECKPOINTFREQ == 0 and agent.total_steps > 0 and CHECKPOINTS and cycle != agent.total_steps -steps:
+        if agent.total_steps % CHECKPOINTFREQ == 0 and agent.total_steps > 0 and CHECKPOINTS:
             checkpoint_actorPath = actorPath.replace('/check/', f'/{cycle}/')
             checkpoint_criticPath = criticPath.replace('/check/', f'/{cycle}/')
             agent.saveModels(actor_path=checkpoint_actorPath, critic_path=checkpoint_criticPath, checkpoint=True)
             print(f"Checkpoint Models saved to {checkpoint_actorPath} and {checkpoint_criticPath} ")
 
         agent.clear_data_store()
-        print(f" ===> Steps: {agent.step_history[-1]} | GradUpdates: {total_updates:.0f} | lr = {critic_opt.learning_rate} | Mean [-50:]: {agent.rolling_mean_history[-1]:.2f}")
 
 
 
@@ -240,5 +254,5 @@ if __name__ == "__main__":
         plt.ylabel("Episodic Reward")
         plt.legend(loc = 'lower right')
         plt.grid()
-        plt.plot()
+        plt.show()
         plt.savefig(FIGURENAME)

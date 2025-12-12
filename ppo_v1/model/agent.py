@@ -1,9 +1,10 @@
+from concurrent.futures import ThreadPoolExecutor
 import os
 import numpy as np
 from model.actor import Actor
 from model.critic import Critic
 import tensorflow as tf
-from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import Pool, TimeoutError
 import gymnasium as gym
 from operator import itemgetter
 from model.cnn import ReducedGlorot
@@ -35,6 +36,8 @@ class AgentPPO:
         }
     d_size: int
         - Number of trajectories samples during each iteration of k (or in our case cycles)
+    collection_size: int
+        - Numper of steps played by each env before updating
     actor: Actor
         - Constructed Actor class containing its network and update methods
     critic: Critic
@@ -70,12 +73,11 @@ class AgentPPO:
     clear_data
         - Resets the stored_traj attribute to allow for a new set of training data to be collected
     """
-##################################################################################################################################################
-## Constructor
-##################################################################################################################################################
+
     def __init__(
             self ,
             d_size: int ,
+            collection_size: int,
             actor: Actor,
             critic: Critic,
             discount: float,
@@ -98,6 +100,7 @@ class AgentPPO:
         }
 
         self.d_size: int  = d_size
+        self.collection_size: int = collection_size
 
         # Models
         self.actor: Actor = actor
@@ -122,8 +125,8 @@ class AgentPPO:
 
     def train_cycle(
             self,
-            envs, 
-            seeds,
+            env, 
+            seed,
             actor_opt, 
             critic_opt, 
             epoch_num,
@@ -133,46 +136,18 @@ class AgentPPO:
             use_entropy,
         ) -> tuple :
 
-        # 1. data collection
-        with ThreadPoolExecutor(max_workers = self.d_size) as executor:
-            # send of envs for data collection + store the futures too
-            episodes = [executor.submit(self.__collect_data, env, seeds[i] ,use_gae, use_adv) for i, env in enumerate(envs) ]
+        total_reward, total_steps = self.__collect_data(env, seed[0] ,use_gae, use_adv)
 
-            # shove results into list so can sequentially add 
-            data = [ env.result() for env in episodes ]
-        
-        total_steps = 0
-        rewards = []
+        sample_mean = np.mean(total_reward)
 
-        # add  in single thread to keep indecies matched
-        for episode,reward,steps in data:
-            self.stored_traj["observation"].extend(episode["t_observation"])
-            self.stored_traj["reward"].extend(episode["t_reward"])
-            self.stored_traj["terminated"].extend(episode["t_terminated"])
-            self.stored_traj["truncated"].extend(episode["t_truncated"])
-            self.stored_traj["info"].extend(episode["t_info"])
-            self.stored_traj["rtg"].extend(episode["t_rtg"])
-            self.stored_traj["adv"].extend(episode["t_adv"])
-            self.stored_traj["action"].extend(episode["t_action"])
-            self.stored_traj["action_prob"].extend(episode["t_action_prob"])
-            self.stored_traj["critic_val"].extend(episode["t_critic_vals"])
-            rewards.append(reward)
-            total_steps+= steps        
-
-        sample_mean = np.mean(rewards)
-        self.reward_history.append(sample_mean) # type: ignore
-
-
-        samples = len(self.stored_traj["adv"])
-
-        indeces = np.arange(0,samples)
+        indeces = np.arange(0,self.collection_size)
 
         # 2. train the agent (this was steps 2 and 3 but can do both at the same time)
         for epoch in range(epoch_num):
-
+            np.random.seed = seed[epoch + 1]
             np.random.shuffle(indeces)
 
-            for batch in range(0, samples, batch_size):
+            for batch in range(0, self.collection_size, batch_size):
 
                 batch_indeces = indeces[batch: (batch+batch_size)].tolist()
 
@@ -185,18 +160,10 @@ class AgentPPO:
                 #
                 # if we could get tf.Dataset working, prefetch and autotune would be vey nice 
                 obs = tf.concat(batch_make(self.stored_traj["observation"]), axis=0)
-
-                # expanding dims to match the concatenated observations, idk if this fixes calc problems but at least its consistent
-                # i.e 
-                # from 
-                # tf.Tensor(x1,x2, ...], shape=(35,), dtype=float32)
-                # to
-                # tf.Tensor([],[], ...], shape=(35, 1), dtype=float32)
-                action_prob_k = tf.expand_dims(tf.convert_to_tensor(batch_make(self.stored_traj["action_prob"])), axis=-1)
-                adv_k = tf.expand_dims(tf.convert_to_tensor(batch_make(self.stored_traj["adv"])), axis=-1)
-                action_k = tf.expand_dims(tf.convert_to_tensor(batch_make(self.stored_traj["action"])), axis=-1)
-                rtg = tf.expand_dims(tf.convert_to_tensor(batch_make(self.stored_traj["rtg"])),axis=-1)
-
+                action_prob_k = tf.concat(batch_make(self.stored_traj["action_prob"]), axis=0)
+                adv_k = tf.concat(batch_make(self.stored_traj["adv"]), axis=0)
+                action_k = tf.concat(batch_make(self.stored_traj["action"]), axis=0)
+                rtg = tf.concat(batch_make(self.stored_traj["rtg"]),axis= 0)
 
                 self.actor.train(
                     optimiser = actor_opt,
@@ -213,15 +180,36 @@ class AgentPPO:
                     rtg, 
                 )
 
-
-        rolling_mean = np.mean(self.reward_history[-50:])
-        self.rolling_mean_history.append(rolling_mean) # type: ignore
-
-        self.total_steps += total_steps
+        self.total_steps += (total_steps * self.d_size)
         self.total_updates = ((self.total_steps/batch_size) *epoch_num)
-        self.step_history.append(self.total_steps)
 
         return sample_mean, total_steps
+
+    def test(
+            self,
+            envs, 
+    ) -> None:
+        total_rewards = []
+        
+        # run test episodes
+        
+        with ThreadPoolExecutor(max_workers = self.d_size) as executor:
+            # send of envs for data collection + store the futures too
+            episodes = [executor.submit(self.__collect_test_data, env ,False) for i, env in enumerate(envs) ]
+
+            # shove results into list so can sequentially add 
+            results = [ env.result() for env in episodes ]
+            
+        for total_reward in results:
+            total_rewards.append(total_reward)
+        
+        mean_reward = np.mean(total_rewards)
+        self.reward_history.append(mean_reward)
+        rolling_mean = np.mean(self.reward_history[-10:])
+        self.step_history.append(self.total_steps)
+        self.rolling_mean_history.append(rolling_mean)
+        
+        print(f' =====> Test Episodes Mean Reward: {mean_reward} \n')
 
    
     def saveModels(
@@ -294,13 +282,11 @@ class AgentPPO:
             self,
             env,
             seed,
-            use_gae,
-            use_adv,
+            use_gae = False,
+            use_adv = False,
+            use_step_limit = True,
+            test = False,
         ):
-
-        #
-        # run our sampling
-        #
 
         # set current lists
         t_observation, t_reward, t_terminated, t_truncated, t_info, t_action, t_action_prob, t_critic_vals = [],[],[],[],[] ,[], [], []
@@ -308,24 +294,27 @@ class AgentPPO:
         # reset env, fill in rest with placeholders
         observation, info = env.reset(seed= int(seed))
 
-        # keep input to functinoal api CNN happy, need (1,x,y,z) and starting without multiple frames
-        # observation = observation[np.newaxis,...,np.newaxis] /255.0
-        observation = observation[np.newaxis,:] /255.0
-        reward = 0.0
-        terminated = False
-        truncated = False
-        info = None
-        action = 0
-        action_prob = 0
+        # set initial values
+        observation = observation /255.0
+        reward = []
+        terminated = []
+        truncated = []
+        info = []
+        action = []
+        action_prob = []
 
         # track total
-        total_reward = 0
+        total_reward = np.zeros(self.d_size)
         steps = 0
 
-        print("running EP")
+        def checkWhile() -> bool:
+            if use_step_limit:
+                return (steps < self.collection_size)
+            else:
+                return not terminated and not truncated
 
         # run untill the episode ends
-        while not terminated and not truncated:
+        for i in range(self.collection_size -1):
             action, action_prob = self.actor.choose_action(observation) # type: ignore
 
             t_observation.append(observation)
@@ -334,45 +323,51 @@ class AgentPPO:
             t_terminated.append(terminated)
             t_truncated.append(truncated)
             t_info.append(info)
-            t_critic_vals.append(self.critic.predict(observation).numpy().item())
+            t_critic_vals.append(self.critic.predict(observation).numpy().flatten())
 
             observation, reward, terminated, truncated, info = env.step(action)
 
-            # observation = observation[np.newaxis,...,np.newaxis]/255.0
-            observation = observation[np.newaxis,:] /255.0
+            observation = observation /255.0
 
             # append reward after we observed it so S,A,R stored at the same index (makes GAE slightly easier)
             t_reward.append(reward)
 
             total_reward += reward
             steps += 1
-            
-        # perform both rewards to go + adv as soon as trajectory done
-        if use_gae:
-            t_rtg, t_adv = self.__rtg_advgeneral(t_reward,t_critic_vals)
-        elif use_adv:
-            t_rtg, t_adv = self.__rtg_adv(t_reward,t_critic_vals)
 
-        # extend experience logs
-
-        print(f"Episode Completed: Reward: {total_reward:.2f} | Steps: {len(t_reward)} ")
+        # append final observation
+        t_observation.append(observation)
+        t_action.append(action)
+        t_action_prob.append(action_prob)
+        t_terminated.append(terminated)
+        t_truncated.append(truncated)
+        t_info.append(info)
+        t_reward.append(reward)
+        t_critic_vals.append(self.critic.predict(observation).numpy().flatten())
+        total_reward += reward
+        steps += 1
         
-        # put in dict to unpack and append outside this fn
-        # otherwise cant guarentee order of extend for all lists in parallel
-        data = {
-            "t_observation": t_observation,
-            "t_reward": t_reward,
-            "t_terminated": t_terminated,
-            "t_truncated": t_truncated,
-            "t_info": t_info,
-            "t_rtg": t_rtg,
-            "t_adv": t_adv,
-            "t_action": t_action,
-            "t_action_prob": t_action_prob,
-            "t_critic_vals": t_critic_vals,
-        }
+        if not test:
+            # perform both rewards to go + adv as soon as trajectory done
+            if use_gae:
+                t_rtg, t_adv = self.__rtg_advgeneral(t_reward,t_critic_vals, terminated,truncated)
+            elif use_adv:
+                t_rtg, t_adv = self.__rtg_adv(t_reward,t_critic_vals)
 
-        return data, total_reward, steps
+            # extend experience logs
+
+            self.stored_traj["observation"].extend(t_observation)
+            self.stored_traj["reward"].extend(t_reward)
+            self.stored_traj["terminated"].extend(t_terminated)
+            self.stored_traj["truncated"].extend(t_truncated)
+            self.stored_traj["info"].extend(t_info)
+            self.stored_traj["rtg"].extend(t_rtg)
+            self.stored_traj["adv"].extend(t_adv)
+            self.stored_traj["action"].extend(t_action)
+            self.stored_traj["action_prob"].extend(t_action_prob)
+            self.stored_traj["critic_val"].extend(t_critic_vals)
+
+        return total_reward, steps
 
 #
 # GAE calculation
@@ -381,16 +376,20 @@ class AgentPPO:
             self,
             t_rw,
             critic_vals,
+            terminated,
+            truncated
         ) -> tuple:
-        cumulative_reward = 0
-        steps = len(t_rw)
+        steps = self.collection_size
+
+        cumulative_reward = np.zeros(self.d_size)
 
         # initialise rtg and advantage lists
-        rewards_tg = np.zeros(steps,dtype=np.float32)
-        gae = np.zeros(steps,dtype=np.float32)
+        rewards_tg = np.zeros((steps,self.d_size),dtype=np.float32)
+        gae = np.zeros((steps,self.d_size),dtype=np.float32)
 
         # Go back through episode to accumulate reward values
         for time in reversed(range(steps)):
+            mask = np.logical_not(terminated | truncated)
             
             # reward to go
             # as we store s,a,r together at the same index
@@ -398,20 +397,24 @@ class AgentPPO:
 
             rtg = reward + (self.discount * cumulative_reward)
 
-            rewards_tg[time] = rtg
+            rewards_tg[time] = np.where(mask,rtg,0)
             cumulative_reward = rtg
 
-            delta = 0
+            delta = reward
             # check if not at last recorded step (terminal doesnt have a value so just skip it )
             if time < steps-1:
                 # calculate td value, using same as adv
                 # 𝑟𝑡 + 𝛾𝑉(𝑠𝑡+1) − 𝑉(𝑠𝑡)
                 delta = reward + (self.discount * critic_vals[time + 1]) - critic_vals[time]
             
-            if time< steps -2:
+            if time< steps -1:
                 gae[time] = delta + ((self.discount * self.td_lambda) * gae[time +1])
             else:
                 gae[time] = delta
+            
+            # if terminal set to 0 otherwise keep propagating 
+            gae[time] = np.where(mask,gae[time],0)
+
 
         return rewards_tg, gae
 
@@ -459,3 +462,61 @@ class AgentPPO:
         # print(critic_values)
 
         return rewards_tg, advantage
+    
+
+    def __collect_test_data(
+            self,
+            env,
+            seed,
+        ):
+
+        #
+        # run our sampling
+        #
+
+        # set current lists
+        t_observation, t_reward, t_terminated, t_truncated, t_info, t_action, t_action_prob, t_critic_vals = [],[],[],[],[] ,[], [], []
+
+        # reset env, fill in rest with placeholders
+        observation, info = env.reset(seed= int(seed))
+
+        # keep input to functinoal api CNN happy, need (1,x,y,z) and starting without multiple frames
+        # observation = observation[np.newaxis,...,np.newaxis] /255.0
+        observation = observation[np.newaxis,:] /255.0
+        reward = 0.0
+        terminated = False
+        truncated = False
+        info = None
+        action = 0
+        action_prob = 0
+
+        # track total
+        total_reward = 0
+        steps = 0
+
+        # run untill the episode ends
+        while not terminated and not truncated:
+            action, action_prob = self.actor.choose_training_action(observation) # type: ignore
+
+            t_observation.append(observation)
+            t_action.append(action)
+            t_action_prob.append(action_prob)
+            t_terminated.append(terminated)
+            t_truncated.append(truncated)
+            t_info.append(info)
+            t_critic_vals.append(self.critic.predict(observation).numpy().item())
+
+            observation, reward, terminated, truncated, info = env.step(action)
+
+            # observation = observation[np.newaxis,...,np.newaxis]/255.0
+            observation = observation[np.newaxis,:] /255.0
+
+            # append reward after we observed it so S,A,R stored at the same index (makes GAE slightly easier)
+            t_reward.append(reward)
+
+            total_reward += reward
+            steps += 1
+            
+        print(f"Test Episode Completed: Reward: {total_reward:.2f} | Steps: {len(t_reward)}")
+        
+        return total_reward,
