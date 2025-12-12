@@ -1,3 +1,4 @@
+import os
 import pickle
 import gymnasium as gym
 from keras import optimizers
@@ -75,6 +76,39 @@ CRITICDENSEUNITS = 512
 BATCHSIZE = 64 # 64
 
 
+def _ensure_optimizer_built(optimizer, variables):
+    if hasattr(optimizer, "built") and not optimizer.built:
+        optimizer.build(variables)
+
+
+def save_training_state(base_actor_path, agent, actor_opt, critic_opt, game_seeds):
+    _ensure_optimizer_built(actor_opt, agent.actor.cnn.trainable_variables)
+    _ensure_optimizer_built(critic_opt, agent.critic.cnn.trainable_variables)
+
+    training_data = {
+        "rolling_mean_history": agent.rolling_mean_history,
+        "rolling_mean_store": agent.rolling_mean_history,
+        "reward_history": agent.reward_history,
+        "step_history": agent.step_history,
+        "total_steps": agent.total_steps,
+        "total_updates": agent.total_updates,
+        "agent_reward_history": agent.reward_history,
+        "game_seeds": game_seeds,
+        "actor_optimizer_weights": actor_opt.get_weights(),
+        "critic_optimizer_weights": critic_opt.get_weights(),
+        "actor_optimizer_iterations": int(actor_opt.iterations.numpy()),
+        "critic_optimizer_iterations": int(critic_opt.iterations.numpy()),
+    }
+
+    file_path = base_actor_path.replace('actor_model', 'training_data.pkl')
+    directory = os.path.dirname(file_path)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory, exist_ok=True)
+
+    with open(file_path, "wb") as f:
+        pickle.dump(training_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
 
 if __name__ == "__main__":
 
@@ -141,18 +175,56 @@ if __name__ == "__main__":
     if loadModel:
         agent.loadModels(actor_path=loadPathActor, critic_path=loadPathCritic)
         
-        filePath = actorPath.replace('actor_model', 'training_data.pkl')
+        filePath = loadPathActor.replace('actor_model', 'training_data.pkl')
         
         try:
             with open(filePath, "rb") as f:
                 data = pickle.load(f)
-                agent.rolling_mean_history = data.get("rolling_mean_history", [])
-                agent.reward_history = data.get("reward_history", [])
-                agent.step_history = data.get("step_history", [])
-                agent.total_updates = data.get("total_updates", 0)
-                game_seeds = data.get("game_seeds", [])
+
+            rolling_hist = data.get("rolling_mean_history") or data.get("rolling_mean_store")
+            if rolling_hist is not None:
+                agent.rolling_mean_history = rolling_hist
+
+            agent.reward_history = data.get("reward_history", agent.reward_history)
+            agent.step_history = data.get("step_history", agent.step_history)
+            agent.total_updates = data.get("total_updates", agent.total_updates)
+            agent.total_steps = data.get(
+                "total_steps",
+                agent.step_history[-1] if agent.step_history else agent.total_steps
+            )
+
+            loaded_game_seeds = data.get("game_seeds")
+            if loaded_game_seeds is not None and len(loaded_game_seeds) > 0:
+                game_seeds = loaded_game_seeds
+
+            actor_opt_weights = data.get("actor_optimizer_weights")
+            if actor_opt_weights:
+                _ensure_optimizer_built(act_opt, actor.cnn.trainable_variables)
+                act_opt.set_weights(actor_opt_weights)
+
+            actor_opt_iterations = data.get("actor_optimizer_iterations")
+            if actor_opt_iterations is not None:
+                act_opt.iterations.assign(actor_opt_iterations)
+
+            critic_opt_weights = data.get("critic_optimizer_weights")
+            if critic_opt_weights:
+                _ensure_optimizer_built(critic_opt, critic.cnn.trainable_variables)
+                critic_opt.set_weights(critic_opt_weights)
+
+            critic_opt_iterations = data.get("critic_optimizer_iterations")
+            if critic_opt_iterations is not None:
+                critic_opt.iterations.assign(critic_opt_iterations)
+
+            if not agent.reward_history:
+                agent.reward_history = [0]
+            if not agent.step_history:
+                agent.step_history = [agent.total_steps]
+            if not agent.rolling_mean_history:
+                agent.rolling_mean_history = [0]
+
+            print(f"Loaded training state from {filePath}")
         except FileNotFoundError:
-            print("No store data found")
+            print("No stored data found")
 
     ##
     ## Main Training loop
@@ -192,6 +264,7 @@ if __name__ == "__main__":
             checkpoint_actorPath = actorPath.replace('/check/', f'/{cycle}/')
             checkpoint_criticPath = criticPath.replace('/check/', f'/{cycle}/')
             agent.saveModels(actor_path=checkpoint_actorPath, critic_path=checkpoint_criticPath, checkpoint=True)
+            save_training_state(checkpoint_actorPath, agent, act_opt, critic_opt, game_seeds)
             print(f"Checkpoint Models saved to {checkpoint_actorPath} and {checkpoint_criticPath} ")
 
         agent.clear_data_store()
@@ -210,21 +283,7 @@ if __name__ == "__main__":
         
         agent.saveModels(actor_path=actorPath, critic_path=criticPath, temp=f'{agent.rolling_mean_history[-1]:.0f}', checkpoint=False, saveCheckpoints=CHECKPOINTS)
     
-
-    # Save training data
-    training_data = {
-        "rolling_mean_store": agent.rolling_mean_history,
-        "reward_history": agent.reward_history,
-        "step_history": agent.step_history,
-        "total_updates": agent.total_updates,
-        "agent_reward_history": agent.reward_history,
-        "game_seeds": game_seeds
-    }
-    
-    filePath = actorPath.replace('actor_model', 'training_data.pkl')
-    
-    with open(filePath, "wb") as f:
-        pickle.dump(training_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+    save_training_state(actorPath, agent, act_opt, critic_opt, game_seeds)
 
 
     # plot the trajectory undiscounted return
