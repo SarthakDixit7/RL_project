@@ -107,6 +107,7 @@ class AgentPPO:
         self.discount: float = discount
         self.epsilon: float = epsilon
         self.td_lambda: float = td_lambda
+        self.step_limit: int = 2000
 
         # for plotting
         self.reward_history: list = [0]
@@ -114,6 +115,9 @@ class AgentPPO:
         self.total_steps: int = 0
         self.rolling_mean_history: list = [0]
         self.total_updates: int = 0
+        self.mean_reward_history: list = [0]
+        self.test_step_history: list = [0]
+        self.test_rolling_mean_history: list = [0]
 
 
 ##################################################################################################################################################
@@ -131,12 +135,13 @@ class AgentPPO:
             use_gae,
             use_adv,
             use_entropy,
+            use_step_limit: bool = False,
         ) -> tuple :
 
         # 1. data collection
         with ThreadPoolExecutor(max_workers = self.d_size) as executor:
             # send of envs for data collection + store the futures too
-            episodes = [executor.submit(self.__collect_data, env, seeds[i] ,use_gae, use_adv) for i, env in enumerate(envs) ]
+            episodes = [executor.submit(self.__collect_data, env, seeds[i] ,use_gae, use_adv, use_step_limit) for i, env in enumerate(envs) ]
 
             # shove results into list so can sequentially add 
             data = [ env.result() for env in episodes ]
@@ -283,7 +288,33 @@ class AgentPPO:
             "action_prob": [],
             "critic_val": []
         }
+    
+    def test(
+            self,
+            envs, 
+            seeds,
+    ) -> None:
+        total_rewards = []
         
+        # run test episodes
+        
+        with ThreadPoolExecutor(max_workers = self.d_size) as executor:
+            # send of envs for data collection + store the futures too
+            episodes = [executor.submit(self.__collect_data, env, seeds[i] ,False, False, False, True) for i, env in enumerate(envs) ]
+
+            # shove results into list so can sequentially add 
+            data = [ env.result() for env in episodes ]
+            
+        for _, reward, _ in data:
+            total_rewards.append(reward)
+        
+        mean_reward = np.mean(total_rewards)
+        self.mean_reward_history.append(mean_reward)
+        rolling_mean = np.mean(self.mean_reward_history[-10:])
+        self.test_step_history.append(self.total_steps)
+        self.test_rolling_mean_history.append(rolling_mean)
+        
+        print(f' =====> Test Episodes Mean Reward: {mean_reward} ')
 
 
 ##################################################################################################################################################
@@ -296,6 +327,8 @@ class AgentPPO:
             seed,
             use_gae,
             use_adv,
+            use_step_limit: bool = False,
+            testing: bool = False
         ):
 
         #
@@ -322,10 +355,16 @@ class AgentPPO:
         total_reward = 0
         steps = 0
 
-        print("running EP")
+        print(f'running {"test" if testing else "training"} episode with seed {seed} ')
+
+        def checkWhile() -> bool:
+            if use_step_limit:
+                return (steps < self.step_limit)
+            else:
+                return not terminated and not truncated
 
         # run untill the episode ends
-        while not terminated and not truncated:
+        while checkWhile():
             action, action_prob = self.actor.choose_action(observation) # type: ignore
 
             t_observation.append(observation)
@@ -347,11 +386,23 @@ class AgentPPO:
             total_reward += reward
             steps += 1
             
+            if use_step_limit and ((terminated or truncated) and steps < self.step_limit):
+                observation, info = env.reset(seed=None)
+                observation = observation[np.newaxis,:] /255.0
+                terminated = False
+                truncated = False
+            
+        done_mask = terminated or truncated
+            
         # perform both rewards to go + adv as soon as trajectory done
+        # used done mask to indicate if episode ended naturally or via step limit to prevent bootstrapping from leaking
         if use_gae:
-            t_rtg, t_adv = self.__rtg_advgeneral(t_reward,t_critic_vals)
+            t_rtg, t_adv = self.__rtg_advgeneral(t_reward,t_critic_vals) if not use_step_limit else self.__rtg_advgeneral_with_done(t_reward,t_critic_vals, t_terminated)
         elif use_adv:
-            t_rtg, t_adv = self.__rtg_adv(t_reward,t_critic_vals)
+            t_rtg, t_adv = self.__rtg_adv(t_reward,t_critic_vals) if not use_step_limit else self.__rtg_adv_with_done(t_reward,t_critic_vals, t_terminated)
+        else:
+            t_rtg = np.zeros(len(t_reward),dtype=np.float32)
+            t_adv = np.zeros(len(t_reward),dtype=np.float32)
 
         # extend experience logs
 
@@ -414,6 +465,45 @@ class AgentPPO:
                 gae[time] = delta
 
         return rewards_tg, gae
+    
+    def __rtg_advgeneral_with_done(
+            self,
+            t_rw,
+            critic_vals,
+            done_mask,
+        ) -> tuple:
+        cumulative_reward = 0
+        steps = len(t_rw)
+
+        # initialise rtg and advantage lists
+        rewards_tg = np.zeros(steps,dtype=np.float32)
+        gae = np.zeros(steps,dtype=np.float32)
+        done_mask = np.asarray(done_mask, dtype=np.float32)
+
+        # Go back through episode to accumulate reward values
+        for time in reversed(range(steps)):
+            
+            # reward to go
+            # as we store s,a,r together at the same index
+            reward = t_rw[time]
+
+            not_done = 1 - done_mask[time]
+            
+            next_val = critic_vals[time + 1] if (time < steps -1 and not_done) else 0.0
+            
+            delta = reward + (self.discount * next_val) - critic_vals[time]
+            
+            # check if not at last recorded step (terminal doesnt have a value so just skip it )
+            if time < steps-1:
+                # calculate td value, using same as adv
+                # 𝑟𝑡 + 𝛾𝑉(𝑠𝑡+1) − 𝑉(𝑠𝑡)
+                gae[time] = delta + (self.discount * self.td_lambda * not_done * gae[time +1])
+                rewards_tg[time] = reward + (self.discount * not_done * rewards_tg[time +1])
+            else:
+                gae[time] = delta
+                rewards_tg[time] = reward
+
+        return rewards_tg, gae
 
 # Works less well than GAE but still here
     def __rtg_adv(
@@ -450,6 +540,46 @@ class AgentPPO:
             # to
             # 𝐴(𝑠𝑡,𝑎𝑡) ≈ 𝑟𝑡 + 𝛾𝑉(𝑠𝑡+1) − 𝑉(𝑠𝑡)
             advantage[time] = reward + disc - critic_values[time]
+        
+        # print("\n rtg")
+        # print(rewards_tg)
+        # print("\n adv")
+        # print(advantage)
+        # print("\n critic_vals")
+        # print(critic_values)
+
+        return rewards_tg, advantage
+    
+    def __rtg_adv_with_done(
+            self, 
+            t_rw, 
+            critic_values,
+            done_mask,
+        ) -> tuple :
+        
+        cumulative_reward = 0
+        steps = len(t_rw)
+
+        # initialise rtg and advantage lists
+        rewards_tg = np.zeros(steps,dtype=np.float32)
+        advantage = np.zeros(steps,dtype=np.float32)
+        done_mask = np.asarray(done_mask, dtype=np.float32)
+
+        for time in reversed(range(steps)):
+            
+            # reward to go
+            # as we store s,a,r together at the same index
+            reward = t_rw[time]
+            not_done = 1 - done_mask[time]
+            next_val = critic_values[time + 1] if (time < steps-1 and not_done) else 0.0
+
+            rewards_tg[time] = reward + (self.discount * not_done * (rewards_tg[time + 1] if time < steps-1 else 0))
+            advantage[time] = reward + (self.discount * next_val) - critic_values[time]
+            
+            # Since we store the reward with the action its now
+            # 𝐴(𝑠𝑡,𝑎𝑡) ≈ 𝑟𝑡+1 + 𝛾𝑉(𝑠𝑡+1) − 𝑉(𝑠𝑡)
+            # to
+            # 𝐴(𝑠𝑡,𝑎𝑡) ≈ 𝑟𝑡 + 𝛾𝑉(𝑠𝑡+1) − 𝑉(𝑠𝑡)
         
         # print("\n rtg")
         # print(rewards_tg)

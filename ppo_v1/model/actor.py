@@ -86,6 +86,7 @@ class Actor:
             if include_entropy:
                 entropy_term = tf.multiply(action_probs, tf.multiply(tf.math.log(action_probs),-1))
                 weighted_entropy = tf.multiply(entropy_term, self.entropy)
+                #print(f'weighted_entropy shape: {weighted_entropy.shape}')
                 loss = tf.add( loss , weighted_entropy)
 
             # minus cuz idk how to maximise

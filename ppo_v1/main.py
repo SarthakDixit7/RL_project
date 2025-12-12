@@ -18,16 +18,21 @@ EPOCHSPERCYCLE = 3 # 3
 # i.e how many sets of trajectories we sample under one 
 CYCLES = 3
 EPISODESPERCYCLE = 5
+USESTEPLIMIT = True
 SOLUTIONTHRESHOLD = 90 
 
 # plotting stuff
 PLOT = True
 FIGURENAME = "Boxing_max_eps"
-LATEX = True
+LATEX = False
 DIAGRAMWIDTH = 397.48499
 BORDERTHICKNESS = 0.5
 LINETHICKNESS = 0.6
 STYLE = "latex_style.mplstyle"
+
+# testing stuff
+TESTFREQ = 10000
+RUNSPERTEST = 10
 
 # save stuff
 SAVE = True
@@ -128,6 +133,7 @@ if __name__ == "__main__":
     
     rng = np.random.default_rng()
     game_seeds = rng.integers(low=0,high=4000000000, size=(CYCLES,EPISODESPERCYCLE), dtype=np.uint32)
+    test_seeds = rng.integers(low=0,high=4000000000, size=(1,RUNSPERTEST), dtype=np.uint32)
 
     # try loading models
     if loadModel:
@@ -162,6 +168,7 @@ if __name__ == "__main__":
             use_gae = USEGAE,
             use_adv= USEADV,
             use_entropy=USEENTROPY,
+            use_step_limit=USESTEPLIMIT
         )
 
         total_updates = ((agent.total_steps/BATCHSIZE) * EPOCHSPERCYCLE)
@@ -172,6 +179,12 @@ if __name__ == "__main__":
             print(f"Solution Reached (Mean [-50:] = {agent.rolling_mean_history[-1]:.2f})")
             played_cycles = cycle
             break
+        
+        if agent.total_steps % TESTFREQ == 0 and agent.total_steps > 0:
+            test_envs = [gym.make(GAME, obs_type ='ram') for _ in range(RUNSPERTEST)]
+            agent.test(test_envs, test_seeds[0])
+            for env in test_envs:
+                env.close()
         
         if agent.total_steps % CHECKPOINTFREQ == 0 and agent.total_steps > 0 and CHECKPOINTS and cycle != agent.total_steps -steps:
             checkpoint_actorPath = actorPath.replace('/check/', f'/{cycle}/')
@@ -196,21 +209,20 @@ if __name__ == "__main__":
         
         agent.saveModels(actor_path=actorPath, critic_path=criticPath, temp=f'{agent.rolling_mean_history[-1]:.0f}', checkpoint=False, saveCheckpoints=CHECKPOINTS)
     
-
-    # Save training data
-    training_data = {
-        "rolling_mean_store": agent.rolling_mean_history,
-        "reward_history": agent.reward_history,
-        "step_history": agent.step_history,
-        "total_updates": agent.total_updates,
-        "agent_reward_history": agent.reward_history,
-        "game_seeds": game_seeds
-    }
-    
-    filePath = actorPath.replace('actor_model', 'training_data.pkl')
-    
-    with open(filePath, "wb") as f:
-        pickle.dump(training_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        # Save training data
+        training_data = {
+            "rolling_mean_store": agent.rolling_mean_history,
+            "reward_history": agent.reward_history,
+            "step_history": agent.step_history,
+            "total_updates": agent.total_updates,
+            "agent_reward_history": agent.reward_history,
+            "game_seeds": game_seeds
+        }
+        
+        filePath = actorPath.replace('actor_model', 'training_data.pkl')
+        
+        with open(filePath, "wb") as f:
+            pickle.dump(training_data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
     # plot the trajectory undiscounted return
@@ -233,8 +245,8 @@ if __name__ == "__main__":
             height = width/golden
 
         plt.figure(figsize = (width,height))
-        plt.plot(agent.step_history, agent.reward_history, label = r"PPO $\mu_{D_k}$", alpha = 0.9)
-        plt.plot(agent.step_history, agent.rolling_mean_history, label = r"$\text{SMA}_{50}$", linewidth=1)
+        plt.plot(agent.test_step_history, agent.mean_reward_history, label = r"PPO $\mu_{D_k}$", alpha = 0.9)
+        plt.plot(agent.test_step_history, agent.test_rolling_mean_history, label = r"$\text{SMA}_{50}$", linewidth=1)
         plt.hlines(y=SOLUTIONTHRESHOLD, xmin=0, xmax= agent.total_steps, colors='r', linestyles='--', linewidth=1, alpha= 0.9)
         plt.xlabel(f"Step total")
         plt.ylabel("Episodic Reward")
