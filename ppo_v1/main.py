@@ -154,15 +154,13 @@ if __name__ == "__main__":
         td_lambda = TDLAMBDA
     )
     
-    # setup envs to be parallel - cant use the atari version for ram observation
-    # just using parallel envs was giving sample issues? model performance seemed to be worse than running single threaded
-    # so separately forcing random seeds per episode for each env, as possibly playing same epsisode seed?
+    # setup envs to be parallel 
     envs = gym.make_vec(GAME, num_envs=EPISODESPERCYCLE, vectorization_mode="async",obs_type = "ram")
 
 
     # lr = 0.00025
     # these settings get ~72 (initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.0025, warmup_steps=1000 , warmup_target=0.00025)
-    lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=80000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
+    lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
 
     act_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
     critic_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
