@@ -1,13 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor
 import os
 import numpy as np
-from model.actor import Actor
-from model.critic import Critic
+from ppo_v1.model.actor import Actor
+from ppo_v1.model.critic import Critic
 import tensorflow as tf
 from multiprocessing import Pool, TimeoutError
 import gymnasium as gym
 from operator import itemgetter
-from model.cnn import ReducedGlorot
+from ppo_v1.model.cnn import ReducedGlorot
 
 ## 
 ## Initial PPO implementation 

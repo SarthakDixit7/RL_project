@@ -1,6 +1,6 @@
 import gymnasium as gym
 import tensorflow as tf
-from model.cnn import define_model
+from ppo_v1.model.cnn import define_model
 
 ##
 ## Critic network

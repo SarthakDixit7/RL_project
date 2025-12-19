@@ -5,11 +5,12 @@ from keras import optimizers
 import matplotlib.pyplot as plt
 import ale_py
 import numpy as np
+import imageio
 
 # from mods
-from model.agent import AgentPPO
-from model.actor import Actor
-from model.critic import Critic
+from ppo_v1.model.agent import AgentPPO
+from ppo_v1.model.actor import Actor
+from ppo_v1.model.critic import Critic
 
 ##
 ## Main running constants
@@ -42,6 +43,10 @@ criticPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}critic
 TESTFREQ = 2560 * 40
 RUNSPERTEST = 20
 
+# video recording
+RECORD_VIDEO = True
+VIDEO_MAX_STEPS = 4000
+
 # load model
 # replace x with the mean score to load different models
 loadModel = False
@@ -56,13 +61,13 @@ loadPathCritic = f'trainedModels/{GAME}/-177/critic_model'
 # - Return discount duh
 TDLAMBDA = 0.90
 DISCOUNT = 0.99
-EPSCLIP = 0.2
+EPSCLIP = 0.15
 GRADNORM = 0.5
-ENTROPY = 0.005
+ENTROPY = 0.01
 
 # toggles
 USEGAE = True
-USEADV = False
+USEADV = True
 USEENTROPY = True
 
 # CNN hyperparameters
@@ -73,12 +78,36 @@ CRITICCONVFILTERS = 32
 CRITICDENSEUNITS = 512
 
 # DONT use more than 100 for any of the attari games itll go OOM (probably)
-BATCHSIZE = 64 # 64
+BATCHSIZE = 128
 
 
 def _ensure_optimizer_built(optimizer, variables):
     if hasattr(optimizer, "built") and not optimizer.built:
         optimizer.build(variables)
+
+
+def _optimizer_variables(optimizer):
+    vars_attr = getattr(optimizer, "variables", None)
+    if callable(vars_attr):
+        return list(vars_attr())
+    if isinstance(vars_attr, (list, tuple)):
+        return list(vars_attr)
+    return []
+
+
+def _serialize_optimizer(optimizer):
+    # Newer keras optimizers (e.g., AdamW) do not expose get_weights; capture the variable tensors instead.
+    return [np.array(v.numpy()) for v in _optimizer_variables(optimizer)]
+
+
+def _deserialize_optimizer(optimizer, weights):
+    opt_vars = _optimizer_variables(optimizer)
+    if len(opt_vars) != len(weights):
+        print(f"Warning: optimizer variable mismatch (expected {len(opt_vars)}, got {len(weights)})")
+        return
+
+    for var, weight in zip(opt_vars, weights):
+        var.assign(weight)
 
 
 def save_training_state(base_actor_path, agent, actor_opt, critic_opt, game_seeds):
@@ -94,8 +123,8 @@ def save_training_state(base_actor_path, agent, actor_opt, critic_opt, game_seed
         "total_updates": agent.total_updates,
         "agent_reward_history": agent.reward_history,
         "game_seeds": game_seeds,
-        "actor_optimizer_weights": actor_opt.get_weights(),
-        "critic_optimizer_weights": critic_opt.get_weights(),
+        "actor_optimizer_weights": _serialize_optimizer(actor_opt),
+        "critic_optimizer_weights": _serialize_optimizer(critic_opt),
         "actor_optimizer_iterations": int(actor_opt.iterations.numpy()),
         "critic_optimizer_iterations": int(critic_opt.iterations.numpy()),
     }
@@ -107,6 +136,37 @@ def save_training_state(base_actor_path, agent, actor_opt, critic_opt, game_seed
 
     with open(file_path, "wb") as f:
         pickle.dump(training_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def record_episode_to_mp4(agent, env_id, output_path, seed=None, max_steps=2000):
+    env = gym.make(env_id, obs_type='ram', render_mode='rgb_array')
+    observation, info = env.reset(seed=seed)
+    frames = []
+    done = False
+    steps = 0
+
+    while not done and steps < max_steps:
+        # normalise like training
+        norm_obs = observation / 255.0
+        action, _ = agent.actor.choose_action(norm_obs)
+        frame = env.render()
+        if frame is not None:
+            frames.append(frame)
+
+        observation, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
+        steps += 1
+
+    # final frame
+    frame = env.render()
+    if frame is not None:
+        frames.append(frame)
+
+    env.close()
+
+    if frames:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        imageio.mimsave(output_path, frames, fps=30)
 
 
 
@@ -162,7 +222,13 @@ if __name__ == "__main__":
 
     # lr = 0.00025
     # these settings get ~72 (initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.0025, warmup_steps=1000 , warmup_target=0.00025)
-    lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=80000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
+    lr = optimizers.schedules.CosineDecay(
+        initial_learning_rate=5e-05,
+        decay_steps=200000,
+        alpha=0.1,
+        warmup_steps=2000,
+        warmup_target=3e-04,
+    )
 
     act_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
     critic_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
@@ -200,7 +266,7 @@ if __name__ == "__main__":
             actor_opt_weights = data.get("actor_optimizer_weights")
             if actor_opt_weights:
                 _ensure_optimizer_built(act_opt, actor.cnn.trainable_variables)
-                act_opt.set_weights(actor_opt_weights)
+                _deserialize_optimizer(act_opt, actor_opt_weights)
 
             actor_opt_iterations = data.get("actor_optimizer_iterations")
             if actor_opt_iterations is not None:
@@ -209,7 +275,7 @@ if __name__ == "__main__":
             critic_opt_weights = data.get("critic_optimizer_weights")
             if critic_opt_weights:
                 _ensure_optimizer_built(critic_opt, critic.cnn.trainable_variables)
-                critic_opt.set_weights(critic_opt_weights)
+                _deserialize_optimizer(critic_opt, critic_opt_weights)
 
             critic_opt_iterations = data.get("critic_optimizer_iterations")
             if critic_opt_iterations is not None:
@@ -284,6 +350,10 @@ if __name__ == "__main__":
         agent.saveModels(actor_path=actorPath, critic_path=criticPath, temp=f'{agent.rolling_mean_history[-1]:.0f}', checkpoint=False, saveCheckpoints=CHECKPOINTS)
     
     save_training_state(actorPath, agent, act_opt, critic_opt, game_seeds)
+
+    if RECORD_VIDEO:
+        video_path = actorPath.replace('actor_model', 'training_episode.mp4')
+        record_episode_to_mp4(agent, GAME, video_path, seed=int(game_seeds[0][0]), max_steps=VIDEO_MAX_STEPS)
 
 
     # plot the trajectory undiscounted return
