@@ -4,6 +4,7 @@ numpy==1.26.4
 matplotlib==3.8.2
 gymnasium[atari]==0.29.1
 ale-py==0.8.1
-gym-super-mario-bros==7.5.3
 nes-py==8.2.1
 pillow==10.4.0
+imageio-ffmpeg==0.4.8
+imageio==2.37.2

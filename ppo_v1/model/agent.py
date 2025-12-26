@@ -193,15 +193,40 @@ class AgentPPO:
             env,
             test_num,
     ) -> None:        
-        # run test episodes
-        seed = np.random.randint(0,400000,1)
-        mean_reward,steps = self.__collect_data(env=env, seed = seed, step_limit=test_num, test=True)
-        
+        # run test episodes until we have at least test_num episodes collected
+        episodic_all = []
+        seed = int(np.random.randint(0,400000,1))
+
+        # Use a reasonable step limit per batch to ensure episodes finish (large enough)
+        per_call_steps = max(1000, self.collection_size)
+
+        while len(episodic_all) < test_num:
+            result = self.__collect_data(env=env, seed = seed, step_limit=per_call_steps, test=True)
+            # __collect_data returns (mean, steps, episodic_list) when test=True
+            if len(result) == 3:
+                _, steps, episodic_rewards = result
+            else:
+                # defensive fallback
+                mean_temp, steps = result
+                episodic_rewards = []
+
+            episodic_all.extend(episodic_rewards)
+            seed = (seed + 1) % 4000000000
+
+            # safety: break if nothing collected to avoid infinite loop
+            if not episodic_rewards:
+                print("Warning: No test episodes finished in this interval; increasing step limit may help.")
+                break
+
+        # trim to requested number of episodes
+        episodic_all = episodic_all[:test_num]
+        mean_reward = float(np.mean(episodic_all)) if episodic_all else float('nan')
+
         self.reward_history.append(mean_reward)
         rolling_mean = np.mean(self.reward_history[-20:])
         self.step_history.append(self.total_steps)
         self.rolling_mean_history.append(rolling_mean)
-        
+
         print(f' =====> Test Episodes Mean Reward: {mean_reward} \n')
 
    
@@ -289,12 +314,14 @@ class AgentPPO:
 
         # set initial values
         observation = observation /255.0
-        terminated = np.zeros(self.d_size, dtype=bool)
-        truncated = np.zeros(self.d_size, dtype=bool)
-        info = np.zeros(self.d_size)
+        # number of parallel envs for this call (training uses self.d_size; tests may vary)
+        n_envs = observation.shape[0]
+        terminated = np.zeros(n_envs, dtype=bool)
+        truncated = np.zeros(n_envs, dtype=bool)
+        info = np.zeros(n_envs)
 
         # track total
-        total_reward = np.zeros(self.d_size)
+        total_reward = np.zeros(n_envs)
         steps = 0
         episodic_reward = []
 
@@ -371,6 +398,10 @@ class AgentPPO:
             self.stored_traj["action"].extend(t_action)
             self.stored_traj["action_prob"].extend(t_action_prob)
             self.stored_traj["critic_val"].extend(t_critic_vals)
+
+        # If called in test mode, return episodic rewards too so caller can aggregate a fixed number of episodes
+        if test:
+            return mean_episodic, steps, episodic_reward
 
         return mean_episodic, steps
 
