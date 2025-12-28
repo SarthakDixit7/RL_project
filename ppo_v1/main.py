@@ -96,6 +96,17 @@ def save_training_state(base_actor_path, agent, actor_opt, critic_opt, game_seed
     _ensure_optimizer_built(actor_opt, agent.actor.cnn.trainable_variables)
     _ensure_optimizer_built(critic_opt, agent.critic.cnn.trainable_variables)
 
+    # Try to extract optimizer weights in a robust way (different TF/Keras versions expose different APIs)
+    def _get_opt_weights(opt):
+        try:
+            return opt.get_weights()
+        except AttributeError:
+            # Fall back to reading variables as numpy arrays
+            try:
+                return [v.numpy() for v in opt.variables]
+            except Exception:
+                return None
+
     training_data = {
         "rolling_mean_history": agent.rolling_mean_history,
         "rolling_mean_store": agent.rolling_mean_history,
@@ -105,10 +116,10 @@ def save_training_state(base_actor_path, agent, actor_opt, critic_opt, game_seed
         "total_updates": agent.total_updates,
         "agent_reward_history": agent.reward_history,
         "game_seeds": game_seeds,
-        "actor_optimizer_weights": actor_opt.get_weights(),
-        "critic_optimizer_weights": critic_opt.get_weights(),
-        "actor_optimizer_iterations": int(actor_opt.iterations.numpy()),
-        "critic_optimizer_iterations": int(critic_opt.iterations.numpy()),
+        "actor_optimizer_weights": _get_opt_weights(actor_opt),
+        "critic_optimizer_weights": _get_opt_weights(critic_opt),
+        "actor_optimizer_iterations": int(actor_opt.iterations.numpy()) if hasattr(actor_opt, 'iterations') else None,
+        "critic_optimizer_iterations": int(critic_opt.iterations.numpy()) if hasattr(critic_opt, 'iterations') else None,
     }
 
     file_path = base_actor_path.replace('actor_model', 'training_data.pkl')
@@ -570,7 +581,11 @@ if __name__ == "__main__":
         
         if LATEX: # https://duetosymmetry.com/code/latex-mpl-fig-tips/
             plt.rcParams.update({'text.usetex':True})
-            plt.style.use(STYLE)
+            try:
+                plt.style.use(STYLE)
+            except (OSError, FileNotFoundError):
+                print(f"Warning: Style file '{STYLE}' not found. Using default matplotlib style.")
+                plt.style.use('default')
             pt = 1./72.27
             golden = (1 + 5 ** 0.5) / 2
             width = DIAGRAMWIDTH * pt
