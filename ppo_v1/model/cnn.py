@@ -22,7 +22,7 @@ def conv_block(
 # https://datascience.stackexchange.com/questions/19019/custom-weight-initialization-in-keras
 SCALE = 0.01
 class ReducedGlorot(initializers.GlorotNormal):
-    def __call__(self, shape, dtype = None, **kwargs):
+    def __call__(self, shape, dtype = None):
         glorot = initializers.GlorotUniform()
         return glorot(shape,dtype) * SCALE # type: ignore
 

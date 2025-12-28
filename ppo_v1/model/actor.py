@@ -36,6 +36,22 @@ class Actor:
     # Note choose action uses numpy as thats whats used for collection
     def choose_action(self, state) -> tuple:
         
+        probabilities = self.cnn(state).numpy()
+
+        games, action_num = probabilities.shape
+
+        # The list has to be this
+        actions = np.zeros(games, dtype = np.int32)
+        probs_out = []
+
+        for game in range(games):
+            actions[game] =  np.random.choice(action_num, p=probabilities[game,:])
+            probs_out.append(probabilities[game,actions[game]])
+        
+        return (actions, probs_out) # type: ignore
+    
+    def choose_training_action(self, state) -> tuple:
+        
         # remove extra tensor dimension as this is only used when playing
         # flatten into numpy to stop weird tf numpy stuff
         probabilities = tf.reshape((self.cnn(state)),[-1]).numpy()
@@ -67,6 +83,7 @@ class Actor:
 
             # returns a tensor of probabilities (batch_size , num_actions)
             action_probs = self.give_action_prob(obs)
+            print()
 
             # takes in probability tensor above, creates new tensor with only the prob of the selected action 
             # so just probabilities[action] but for each probability vector (only of y put dims 1)
@@ -84,7 +101,7 @@ class Actor:
             loss = tf.minimum(imp_s , clip)
 
             if include_entropy:
-                entropy_term = tf.multiply(action_probs, tf.multiply(tf.math.log(action_probs),-1))
+                entropy_term = tf.reduce_sum(tf.multiply(action_probs, tf.multiply(tf.math.log(action_probs),-1)),1)
                 weighted_entropy = tf.multiply(entropy_term, self.entropy)
                 loss = tf.add( loss , weighted_entropy)
 
