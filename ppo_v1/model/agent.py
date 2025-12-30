@@ -419,7 +419,7 @@ class AgentPPO:
 
         cumulative_reward = np.zeros(self.d_size)
         # bootstrap incomplete final steps with critic estimate so last non-terminal step bootstraps off V(s_last)
-        cumulative_reward = np.where(np.logical_not(terminated[steps-1] | truncated[steps-1]), critic_vals[steps], cumulative_reward)
+        cumulative_reward = np.where(np.logical_not(terminated[steps-1] | truncated[steps-1]), critic_vals[steps-1], cumulative_reward)
 
         # initialise rtg and advantage lists
         rewards_tg = np.zeros((steps,self.d_size),dtype=np.float32)
