@@ -241,7 +241,16 @@ class AgentPPO:
 
         actorFolders = actor_path.rsplit('/')
         if not checkpoint and saveCheckpoints:
-            os.rename(f'{actorFolders[0]}/{actorFolders[1]}/x', f'{actorFolders[0]}/{actorFolders[1]}/{temp}')
+            base_dir = os.path.join(actorFolders[0], actorFolders[1])
+            src = os.path.join(base_dir, 'x')
+            dst = os.path.join(base_dir, temp)
+            if os.path.exists(src):
+                try:
+                    os.rename(src, dst)
+                except Exception as e:
+                    print(f"Warning: failed to rename checkpoint dir {src} -> {dst}: {e}")
+            else:
+                print(f"Info: no existing checkpoint dir {src}; skipping rename")
             
         currnet = ''
         for folder in actorFolders[:-1]:
