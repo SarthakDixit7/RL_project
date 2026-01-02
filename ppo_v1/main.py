@@ -24,7 +24,7 @@ EPOCHSPERCYCLE = 3 # 3
 CYCLES = 2000
 EPISODESPERCYCLE = 5
 SOLUTIONTHRESHOLD = 90 
-COLLECTIONSIZE = 512
+COLLECTIONSIZE = 1787
 
 # plotting stuff
 PLOT = True
@@ -37,16 +37,14 @@ STYLE = "latex_style.mplstyle"
 
 # save stuff
 SAVE = True
-CHECKPOINTS = False
-CHECKPOINTFREQ = 53400
-bestScore = -1000
-saveBest = True
+CHECKPOINTS = True
+CHECKPOINTFREQ = COLLECTIONSIZE * EPISODESPERCYCLE * 10
 actorPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}actor_model"
 criticPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}critic_model"
 
 # test parameters
-TESTFREQ = 2560 * 2
-RUNSPERTEST = 20
+TESTFREQ = COLLECTIONSIZE * EPISODESPERCYCLE * 10
+RUNSPERTEST = 10
 
 # video parameters (do not touch training hyperparameters)
 # Default set to produce 20 periodic snapshots during a 2000-cycle run (2000 / 100 = 20)
@@ -201,9 +199,8 @@ if __name__ == "__main__":
 
 
     # lr = 0.00025
-    # these settings get ~72 (initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.0025, warmup_steps=1000 , warmup_target=0.00025)
-    lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=250000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
-
+    # these settings get ~72 (initial_learning_rate= 0.0000005 , decay_steps=200000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025)
+    lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=200000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
     act_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
     critic_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
     
