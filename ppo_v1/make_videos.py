@@ -150,6 +150,157 @@ def make_video_for_model(actor_path: str, game: str, output_dir: str, episodes: 
 
     action_env.close()
     render_env.close()
+    
+def record_video_from_actor(actor, game: str, out_path: str, episodes: int = 1, fps: int = 30, deterministic: bool = True, seed: int | None = None) -> None:
+    """Play the environment using the provided Actor instance and save an MP4 to out_path.
+    The function uses a RAM env for actor observations (normalized) and an RGB env for rendering frames.
+    """
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    # envs: one for action (ram obs) and one for rendering (rgb)
+    action_env = gym.make(game, obs_type='ram')
+    # Use obs_type='rgb' for rendering env (Gymnasium expects 'rgb' not 'rgb_array')
+    render_env = gym.make(game, obs_type='rgb', render_mode='rgb_array')
+
+    rng = np.random.default_rng(seed if seed is not None else None)
+
+    frames_all = []
+
+    for ep in range(episodes):
+        s = int(rng.integers(0, 2 ** 31 - 1)) if seed is None else int(seed + ep)
+
+        a_obs, _ = action_env.reset(seed=s)
+        r_obs, _ = render_env.reset(seed=s)
+
+        a_obs = a_obs / 255.0
+
+        frames = []
+        done = False
+        truncated = False
+        step = 0
+        while not (done or truncated):
+            state = np.expand_dims(a_obs, axis=0).astype(np.float32)
+
+            # get probabilities and choose action (deterministic or sampled)
+            try:
+                probs = actor.give_action_prob(state).numpy().reshape(-1)
+            except Exception:
+                probs = actor.cnn(state).numpy().reshape(-1)
+
+            if deterministic:
+                action = int(np.argmax(probs))
+            else:
+                action = int(np.random.choice(len(probs), p=probs))
+
+            a_obs, reward, done, truncated, _ = action_env.step(action)
+            r_obs, reward2, done2, truncated2, _ = render_env.step(action)
+
+            try:
+                frame = render_env.render()
+            except Exception:
+                frame = r_obs
+
+            frames.append(frame)
+
+            a_obs = a_obs / 255.0
+            step += 1
+            if step > 20000:
+                print("Aborting episode due to excessive length")
+                break
+
+        frames_all.append(frames)
+
+    # Save concatenated frames to out_path using fast imageio-ffmpeg writer when available
+    if not frames_all or not any(frames_all):
+        print(f"No frames captured for {out_path}")
+        action_env.close()
+        render_env.close()
+        return
+
+    # use first frame to get size
+    first_frame = next((f for ep in frames_all for f in ep if f is not None), None)
+    if first_frame is None:
+        print(f"No valid frames for {out_path}")
+        action_env.close()
+        render_env.close()
+        return
+
+    # Optionally upscale very small frames for better visual quality (keeps aspect ratio)
+    def _maybe_upscale(frame: 'np.ndarray', min_width:int=320) -> 'np.ndarray':
+        h, w = frame.shape[:2]
+        if w >= min_width:
+            return frame
+        scale = int(min_width / w) + (1 if min_width % w else 0)
+        new_w = w * scale
+        new_h = h * scale
+        try:
+            from PIL import Image
+            pil = Image.fromarray(frame.astype('uint8'))
+            pil = pil.resize((new_w, new_h), Image.BILINEAR)
+            return np.asarray(pil)
+        except Exception:
+            return frame
+
+    # Flatten frames list to per-frame generator
+    flat_frames = []
+    for ep_frames in frames_all:
+        for f in ep_frames:
+            if f is None:
+                continue
+            flat_frames.append(f.astype('uint8'))
+
+    total_frames = len(flat_frames)
+
+    # Try imageio fast path
+    try:
+        import imageio
+        ff_args = ['-preset','ultrafast','-crf','18','-threads','0']
+        print(f"Writing {total_frames} frames to {out_path} using imageio-ffmpeg (fast path)")
+        writer = imageio.get_writer(out_path, fps=fps, codec='libx264', ffmpeg_params=ff_args)
+        for i, frame in enumerate(flat_frames, start=1):
+            frame_to_write = _maybe_upscale(frame)
+            writer.append_data(frame_to_write)
+            if i % 10 == 0 or i == total_frames:
+                print(f"  writing frame {i}/{total_frames}")
+        writer.close()
+        print(f"Saved video -> {out_path} (frames={total_frames})")
+    except Exception as e_img:
+        print(f"imageio fast path failed ({e_img}), falling back to matplotlib writer")
+        import traceback
+        traceback.print_exc()
+        # Fallback to matplotlib (slower)
+        fig = plt.figure(figsize=(first_frame.shape[1] / 100.0, first_frame.shape[0] / 100.0), dpi=100)
+        plt.axis('off')
+        writer = FFMpegWriter(fps=fps)
+        try:
+            print(f"Writing {total_frames} frames to {out_path} using matplotlib fallback")
+            frame_idx = 0
+            with writer.saving(fig, out_path, dpi=100):
+                for i, frame in enumerate(flat_frames, start=1):
+                    plt.imshow(frame)
+                    plt.axis('off')
+                    writer.grab_frame()
+                    if i % 10 == 0 or i == total_frames:
+                        print(f"  writing frame {i}/{total_frames}")
+            print(f"Saved video -> {out_path} (frames={total_frames})")
+        except Exception as e:
+            print(f"Failed to save {out_path} (ffmpeg required?): {e}")
+            try:
+                # Save a debug frame to help diagnose rendering issues
+                debug_frame = first_frame
+                if debug_frame is not None:
+                    from PIL import Image
+                    debug_path = out_path.replace('.mp4', '.debug_frame.png')
+                    Image.fromarray(debug_frame.astype('uint8')).save(debug_path)
+                    print(f"Saved debug frame -> {debug_path}")
+            except Exception as ex_dbg:
+                print(f"Failed to save debug frame: {ex_dbg}")
+            traceback.print_exc()
+        finally:
+            plt.close(fig)
+    finally:
+        action_env.close()
+        render_env.close()
 
 
 def main():
