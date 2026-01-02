@@ -7,7 +7,7 @@ This folder trains and evaluates a PPO agent on `ALE/Boxing-v5` using RAM observ
 - Install system FFmpeg (required for mp4 video writing via `matplotlib` / `imageio-ffmpeg`). On Windows you can install from https://ffmpeg.org and ensure `ffmpeg.exe` is on `PATH`.
 
 ### Install Python dependencies
-From the repo root (where `requirements.txt` lives):
+From `requirements.txt` file:
 
 ```bash
 pip install -r requirements.txt
