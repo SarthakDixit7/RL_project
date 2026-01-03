@@ -44,7 +44,7 @@ def save_training_state(base_actor_path, agent, actor_opt, critic_opt, game_seed
     with open(file_path, "wb") as f:
         pickle.dump(training_data, f, protocol=pickle.HIGHEST_PROTOCOL)
         
-def save(actorPath, criticPath, CHECKPOINTS, agent, CHECKPOINTFREQ, cycle, rolling, act_opt, critic_opt, game_seeds, final, asBest = False):
+def save(actorPath, criticPath, CHECKPOINTS, agent, CHECKPOINTFREQ, cycle, rolling, act_opt, critic_opt, game_seeds, final, asBest = True):
     if asBest:
         saveBest(actorPath, criticPath, agent, act_opt, critic_opt, game_seeds)
     if final:

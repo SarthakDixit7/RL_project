@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter
 import argparse
 import utils as utils
+from make_videos import record_video_from_actor
 from concurrent.futures import ThreadPoolExecutor
 import ale_py
 import numpy as np
@@ -177,7 +178,7 @@ if __name__ == "__main__":
         init_out = os.path.join(video_dir, 'train_cycle_0.mp4')
         try:
             if executor:
-                fut_init = executor.submit(utils.record_video_from_actor, actor, GAME, init_out, video_episodes, video_fps, video_deterministic, seed_start=agent.total_steps if 'agent' in locals() else None)
+                fut_init = executor.submit(record_video_from_actor, actor, GAME, init_out, video_episodes, video_fps, video_deterministic, agent.total_steps if 'agent' in locals() else None)
                 futures.append(fut_init)
                 def _init_done_callback(fut, path=init_out):
                     try:
@@ -190,12 +191,16 @@ if __name__ == "__main__":
                 print(f"Submitted async initial video task -> {init_out}")
             else:
                 print(f"Recording synchronous initial video -> {init_out}")
-                utils.record_video_from_actor(actor, GAME, init_out, episodes=video_episodes, fps=video_fps, deterministic=video_deterministic, seed=None)
+                record_video_from_actor(actor, GAME, init_out, episodes=video_episodes, fps=video_fps, deterministic=video_deterministic, seed=None)
         except Exception as e:
             print(f"Failed to record initial video: {e}")
     
+
     # setup envs to be parallel 
     envs = gym.make_vec(GAME, num_envs=EPISODESPERCYCLE, vectorization_mode="async",obs_type = "ram")
+
+    # Initialize bestScore for tracking best sample_mean
+    bestScore = float('-inf')
 
 
     # lr = 0.00025
@@ -258,9 +263,13 @@ if __name__ == "__main__":
             critic_opt, 
             game_seeds, 
             False, 
-            asBest=bestScore<sample_mean and saveBest
+            asBest=bestScore<sample_mean
         )
         agent.clear_data_store()
+
+        # Update bestScore if current sample_mean is better
+        if sample_mean > bestScore:
+            bestScore = sample_mean
 
         # Periodic training snapshot video (configurable / async)
         try:
@@ -268,7 +277,7 @@ if __name__ == "__main__":
                 os.makedirs(video_dir, exist_ok=True)
                 out_path = os.path.join(video_dir, f'train_cycle_{cycle+1}.mp4')
                 if executor:
-                    fut = executor.submit(utils.record_video_from_actor, agent.actor, GAME, out_path, video_episodes, video_fps, video_deterministic, agent.total_steps)
+                    fut = executor.submit(record_video_from_actor, agent.actor, GAME, out_path, video_episodes, video_fps, video_deterministic, agent.total_steps)
                     futures.append(fut)
                     # Attach a callback to report any exceptions from the background task immediately
                     def _video_done_callback(fut, cyc=cycle+1, path=out_path):
@@ -282,7 +291,7 @@ if __name__ == "__main__":
                     print(f"Submitted async video task for cycle {cycle+1} -> {out_path}")
                 else:
                     print(f"Recording synchronous video for cycle {cycle+1} -> {out_path}")
-                    utils.record_video_from_actor(agent.actor, GAME, out_path, episodes=video_episodes, fps=video_fps, deterministic=video_deterministic, seed=agent.total_steps)
+                    record_video_from_actor(agent.actor, GAME, out_path, episodes=video_episodes, fps=video_fps, deterministic=video_deterministic, seed=agent.total_steps)
         except Exception as e:
             print(f"Failed to record training video for cycle {cycle+1}: {e}")
 
@@ -302,8 +311,12 @@ if __name__ == "__main__":
             critic_opt, 
             game_seeds,
             True,
-            asBest=bestScore<sample_mean and saveBest
+            asBest=bestScore<sample_mean
         )
+
+        # Update bestScore for final save
+        if sample_mean > bestScore:
+            bestScore = sample_mean
     
     utils.save_training_state(actorPath, agent, act_opt, critic_opt, game_seeds)
 
@@ -314,10 +327,10 @@ if __name__ == "__main__":
             final_out = os.path.join(video_dir, 'final_train.mp4')
             if executor:
                 print("Recording final_train.mp4 synchronously (waiting for completion)...")
-                fut = executor.submit(utils.record_video_from_actor, agent.actor, GAME, final_out, video_episodes, video_fps, video_deterministic, agent.total_steps)
+                fut = executor.submit(record_video_from_actor, agent.actor, GAME, final_out, video_episodes, video_fps, video_deterministic, agent.total_steps)
                 fut.result()
             else:
-                utils.record_video_from_actor(agent.actor, GAME, final_out, episodes=video_episodes, fps=video_fps, deterministic=video_deterministic, seed=agent.total_steps)
+                record_video_from_actor(agent.actor, GAME, final_out, episodes=video_episodes, fps=video_fps, deterministic=video_deterministic, seed=agent.total_steps)
     except Exception as e:
         print(f"Failed to record final training video: {e}")
     finally:
