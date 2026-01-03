@@ -1,7 +1,7 @@
 import os
 import pickle
 import gymnasium as gym
-from keras import optimizers
+from tensorflow.keras import optimizers
 import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter
 import argparse
@@ -211,11 +211,24 @@ if __name__ == "__main__":
     
     rng = np.random.default_rng()
     # seeds stored in matrix, where [game generation seed , the rest -> epoch shuffle seeds]
-    game_seeds = rng.integers(low=0,high=4000000000, size=(CYCLES,EPOCHSPERCYCLE + 1), dtype=np.uint32)
+    # game_seeds = rng.integers(low=0,high=4000000000, size=(CYCLES,EPOCHSPERCYCLE + 1), dtype=np.uint32)
+ 
 
     # try loading models
+
     if loadModel:
         game_seeds = utils.loadModel(agent, loadPathActor, loadPathCritic, act_opt, critic_opt, actor, critic)
+
+        # Load game_seeds from training_data.pkl if available
+        filePath = loadPathActor.replace('actor_model', 'training_data.pkl')
+        try:
+            with open(filePath, "rb") as f:
+                data = pickle.load(f)
+            loaded_game_seeds = data.get("game_seeds")
+            if loaded_game_seeds is not None and len(loaded_game_seeds) > 0:
+                game_seeds = loaded_game_seeds
+        except Exception as e:
+            print(f"Warning: Could not load game_seeds from {filePath}: {e}")
 
     ##
     ## Main Training loop

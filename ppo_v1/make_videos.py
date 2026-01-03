@@ -52,7 +52,7 @@ def make_video_for_model(actor_path: str, game: str, output_dir: str, episodes: 
     print(f"Processing model: {actor_path}")
     # Instantiate an action-only env (ram obs) and a rendering env (rgb)
     action_env = gym.make(game, obs_type='ram')
-    render_env = gym.make(game, obs_type='rgb_array', render_mode='rgb_array')
+    render_env = gym.make(game, obs_type='rgb', render_mode='rgb_array')
 
     # Determine actor observation dimensions from ram env
     obs, _ = action_env.reset()
@@ -126,27 +126,56 @@ def make_video_for_model(actor_path: str, game: str, output_dir: str, episodes: 
                 print("Aborting episode due to excessive length")
                 break
 
-        # save frames as mp4 using matplotlib FFMpegWriter (requires ffmpeg in PATH)
+
         out_path = os.path.join(out_subdir, f'episode_{ep+1}.mp4')
         if len(frames) == 0:
             print(f"No frames recorded for {actor_path}, skipping.")
             continue
 
-        fig = plt.figure(figsize=(frames[0].shape[1] / 100.0, frames[0].shape[0] / 100.0), dpi=100)
-        plt.axis('off')
-
-        writer = FFMpegWriter(fps=fps)
+        # Try imageio fast path (same as record_video_from_actor)
         try:
-            with writer.saving(fig, out_path, dpi=100):
-                for frame in frames:
-                    plt.imshow(frame.astype('uint8'))
-                    plt.axis('off')
-                    writer.grab_frame()
-            print(f"Saved video -> {out_path}")
-        except Exception as e:
-            print(f"Failed to save {out_path} (ffmpeg required): {e}")
-        finally:
-            plt.close(fig)
+            import imageio
+            ff_args = ['-preset','ultrafast','-crf','18','-threads','0']
+            print(f"Writing {len(frames)} frames to {out_path} using imageio-ffmpeg (fast path)")
+            writer = imageio.get_writer(out_path, fps=fps, codec='libx264', ffmpeg_params=ff_args)
+            for i, frame in enumerate(frames, start=1):
+                # Use 4K upscale if desired
+                from PIL import Image
+                h, w = frame.shape[:2]
+                min_width = 3840
+                if w < min_width:
+                    scale = min_width / w
+                    new_w = int(w * scale)
+                    new_h = int(h * scale)
+                    pil = Image.fromarray(frame.astype('uint8'))
+                    pil = pil.resize((new_w, new_h), Image.BILINEAR)
+                    frame_to_write = np.asarray(pil)
+                else:
+                    frame_to_write = frame
+                writer.append_data(frame_to_write)
+                if i % 10 == 0 or i == len(frames):
+                    print(f"  writing frame {i}/{len(frames)}")
+            writer.close()
+            print(f"Saved video -> {out_path} (frames={len(frames)})")
+        except Exception as e_img:
+            print(f"imageio fast path failed ({e_img}), falling back to matplotlib writer")
+            import traceback
+            traceback.print_exc()
+            # Fallback to matplotlib (slower)
+            fig = plt.figure(figsize=(frames[0].shape[1] / 100.0, frames[0].shape[0] / 100.0), dpi=100)
+            plt.axis('off')
+            writer = FFMpegWriter(fps=fps)
+            try:
+                with writer.saving(fig, out_path, dpi=100):
+                    for frame in frames:
+                        plt.imshow(frame.astype('uint8'))
+                        plt.axis('off')
+                        writer.grab_frame()
+                print(f"Saved video -> {out_path}")
+            except Exception as e:
+                print(f"Failed to save {out_path} (ffmpeg required): {e}")
+            finally:
+                plt.close(fig)
 
     action_env.close()
     render_env.close()
@@ -228,11 +257,12 @@ def record_video_from_actor(actor, game: str, out_path: str, episodes: int = 1, 
     # Optionally upscale very small frames for better visual quality (keeps aspect ratio)
     def _maybe_upscale(frame: 'np.ndarray', min_width:int=320) -> 'np.ndarray':
         h, w = frame.shape[:2]
+        min_width = 3840  # 4K UHD width
         if w >= min_width:
             return frame
-        scale = int(min_width / w) + (1 if min_width % w else 0)
-        new_w = w * scale
-        new_h = h * scale
+        scale = min_width / w
+        new_w = int(w * scale)
+        new_h = int(h * scale)
         try:
             from PIL import Image
             pil = Image.fromarray(frame.astype('uint8'))
