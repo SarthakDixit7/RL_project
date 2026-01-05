@@ -1,5 +1,6 @@
 import os, pickle
 import matplotlib.pyplot as plt
+import numpy as np
 
 def _ensure_optimizer_built(optimizer, variables):
     if hasattr(optimizer, "built") and not optimizer.built:
@@ -76,9 +77,8 @@ def saveFinal(actorPath, criticPath, agent, act_opt, critic_opt, game_seeds, rol
         
     agent.saveModels(actor_path=actorPath, critic_path=criticPath, temp=f'{agent.rolling_mean_history[-1]:.0f}', checkpoint=False, saveCheckpoints=CHECKPOINTS)
 
-def plotGraph(BORDERTHICKNESS, LINETHICKNESS, LATEX, STYLE, DIAGRAMWIDTH, SOLUTIONTHRESHOLD, FIGURENAME, agent):
-    
-    
+def plotGraph(BORDERTHICKNESS, LINETHICKNESS, LATEX, STYLE, DIAGRAMWIDTH, SOLUTIONTHRESHOLD, FIGURENAME, EPISODESPERCYCLE, agent):
+
     plt.rcParams['grid.linewidth'] = BORDERTHICKNESS
     plt.rcParams['xtick.major.width'] = BORDERTHICKNESS
     plt.rcParams['ytick.major.width'] = BORDERTHICKNESS
@@ -87,38 +87,49 @@ def plotGraph(BORDERTHICKNESS, LINETHICKNESS, LATEX, STYLE, DIAGRAMWIDTH, SOLUTI
 
     width = 20
     height = 10
-    
+
     if LATEX: # https://duetosymmetry.com/code/latex-mpl-fig-tips/
         plt.rcParams.update({'text.usetex':True})
-        try:
-            plt.style.use(STYLE)
-        except (OSError, FileNotFoundError):
-            print(f"Warning: Style file '{STYLE}' not found. Using default matplotlib style.")
-            plt.style.use('default')
+        plt.style.use(STYLE)
         pt = 1./72.27
         golden = (1 + 5 ** 0.5) / 2
         width = DIAGRAMWIDTH * pt
         height = width/golden
 
-    plt.figure(figsize = (width,height))
-    plt.plot(agent.step_history, agent.reward_history, label = r"PPO $\mu_{D_k}$", alpha = 0.9)
-    plt.plot(agent.step_history, agent.rolling_mean_history, label = r"$\text{SMA}_{50}$", linewidth=1)
-    plt.hlines(y=SOLUTIONTHRESHOLD, xmin=0, xmax= agent.total_steps, colors='r', linestyles='--', linewidth=1, alpha= 0.9)
-    plt.xlabel(f"Step total")
+    step_his_np = (np.array(agent.step_history))
+
+    graph = plt.figure(figsize = (width,height))
+    plt.plot(step_his_np, agent.reward_history, label = r"PPO $\mu_{D_k}$", alpha = 0.9)
+    plt.plot(step_his_np, agent.rolling_mean_history, label = r"$\text{SMA}_{20}$", linewidth=0.8)
+    plt.hlines(y=SOLUTIONTHRESHOLD, xmin=0, xmax= agent.total_steps, colors='r', linestyles='--', linewidth=0.8, alpha= 0.9)
+    plt.xlabel(f"Step Total")
     plt.ylabel("Episodic Reward")
     plt.legend(loc = 'lower right')
     plt.grid()
     plt.show()
-    plt.savefig(FIGURENAME)
+
+    graph.savefig(FIGURENAME)
     
-def loadModel(agent, loadPathActor, loadPathCritic, act_opt, critic_opt, actor, critic):
-    agent.loadModels(actor_path=loadPathActor, critic_path=loadPathCritic)
+def loadModel(agent, loadPathActor, loadPathCritic, act_opt, critic_opt, actor, critic, seed_only):
+    if not seed_only:
+        print("loaded models")
+        agent.loadModels(actor_path=loadPathActor, critic_path=loadPathCritic)
         
     filePath = loadPathActor.replace('actor_model', 'training_data.pkl')
-    
+
     try:
         with open(filePath, "rb") as f:
             data = pickle.load(f)
+
+        if seed_only:
+            loaded_game_seeds = data.get("game_seeds")
+            if loaded_game_seeds is not None and len(loaded_game_seeds) > 0:
+                game_seeds = loaded_game_seeds
+                print("loaded game seeds")
+            
+            return game_seeds
+        
+
 
         rolling_hist = data.get("rolling_mean_history") or data.get("rolling_mean_store")
         if rolling_hist is not None:

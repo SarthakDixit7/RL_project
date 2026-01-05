@@ -19,6 +19,7 @@ def conv_block(
         return conv1
 
 # Downscale the initialisation of the glorot normal for the output later for performance improvement (Andrychowicz et al., 2020)
+# This helped direct the implementation
 # https://datascience.stackexchange.com/questions/19019/custom-weight-initialization-in-keras
 SCALE = 0.01
 class ReducedGlorot(initializers.GlorotNormal):
@@ -54,7 +55,7 @@ def define_model(
         output = layers.Dense(1 , activation='linear')(dense_2)
 
     else: 
-        output = layers.Dense(total_moves, activation='softmax', kernel_initializer= ReducedGlorot())(dense_2) # type: ignore
+        output = layers.Dense(int(total_moves), activation='softmax', kernel_initializer= ReducedGlorot())(dense_2) # type: ignore
 
 
     model = Model(model_in, output)

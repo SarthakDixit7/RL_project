@@ -24,12 +24,12 @@ EPOCHSPERCYCLE = 3 # 3
 # i.e how many sets of trajectories we sample under one 
 CYCLES = 2000
 EPISODESPERCYCLE = 5
-SOLUTIONTHRESHOLD = 90 
+SOLUTIONTHRESHOLD = 95 
 COLLECTIONSIZE = 1787
 
 # plotting stuff
 PLOT = True
-FIGURENAME = "Boxing_Not_cos"
+FIGURENAME = "Box_final"
 LATEX = True
 DIAGRAMWIDTH = 397.48499
 BORDERTHICKNESS = 0.5
@@ -42,8 +42,12 @@ CHECKPOINTS = True
 CHECKPOINTFREQ = COLLECTIONSIZE * EPISODESPERCYCLE * 10
 actorPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}actor_model"
 criticPath = f"trainedModels/{GAME}{'/x/check/' if CHECKPOINTS else '/x/'}critic_model"
+# actorPath = f"best_model/actor_model"
+# criticPath = f"best_model/critic_model"
+
 
 # test parameters
+TESTING = False
 TESTFREQ = COLLECTIONSIZE * EPISODESPERCYCLE * 10
 RUNSPERTEST = 10
 
@@ -57,9 +61,11 @@ VIDEO_DETERMINISTIC = True  # use argmax (deterministic) actions for videos
 
 # load model
 # replace x with the mean score to load different models
-loadModel = False
-loadPathActor = f'trainedModels/{GAME}/-177/actor_model'
-loadPathCritic = f'trainedModels/{GAME}/-177/critic_model'
+loadModel = True
+# loadPathActor = f'trainedModels/{GAME}/-177/actor_model'
+# loadPathCritic = f'trainedModels/{GAME}/-177/critic_model'
+loadPathActor = f'best_model/actor_model'
+loadPathCritic = f'best_model/critic_model'
 
 ##
 ## PPO hyperparameters
@@ -202,10 +208,9 @@ if __name__ == "__main__":
     # Initialize bestScore for tracking best sample_mean
     bestScore = float('-inf')
 
-
-    # lr = 0.00025
-    # these settings get ~72 (initial_learning_rate= 0.0000005 , decay_steps=200000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025)
+    # optimisers
     lr = optimizers.schedules.CosineDecay( initial_learning_rate= 0.0000005 , decay_steps=200000, alpha=0.05, warmup_steps=1000 , warmup_target=0.00025 )
+
     act_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
     critic_opt = optimizers.AdamW(learning_rate = lr) # type: ignore
     
@@ -215,7 +220,7 @@ if __name__ == "__main__":
 
     # try loading models
     if loadModel:
-        game_seeds = utils.loadModel(agent, loadPathActor, loadPathCritic, act_opt, critic_opt, actor, critic)
+        game_seeds = utils.loadModel(agent, loadPathActor, loadPathCritic, act_opt, critic_opt, actor, critic, True)
 
     ##
     ## Main Training loop
@@ -245,7 +250,7 @@ if __name__ == "__main__":
             played_cycles = cycle
             break
             
-        if agent.total_steps % TESTFREQ == 0 and agent.total_steps > 0:
+        if agent.total_steps % TESTFREQ == 0 and agent.total_steps > 0 and TESTING:
             # create a vectorized test env (AgentPPO.__collect_data expects a gym.Env with reset())
             test_env = gym.make_vec(GAME, num_envs=RUNSPERTEST, vectorization_mode="async", obs_type='ram')
             agent.test(test_env, RUNSPERTEST)
@@ -263,7 +268,7 @@ if __name__ == "__main__":
             critic_opt, 
             game_seeds, 
             False, 
-            asBest=bestScore<sample_mean
+            asBest=(bestScore<sample_mean and cycle > CYCLES//2)
         )
         agent.clear_data_store()
 
@@ -354,6 +359,7 @@ if __name__ == "__main__":
             STYLE, 
             DIAGRAMWIDTH, 
             SOLUTIONTHRESHOLD, 
-            FIGURENAME, 
+            FIGURENAME,
+            EPISODESPERCYCLE, 
             agent
         )

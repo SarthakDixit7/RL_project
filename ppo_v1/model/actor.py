@@ -35,7 +35,6 @@ class Actor:
 
     # Note choose action uses numpy as thats whats used for collection
     def choose_action(self, state) -> tuple:
-        
         probabilities = self.cnn(state).numpy()
 
         games, action_num = probabilities.shape
@@ -78,7 +77,7 @@ class Actor:
         action_k,
         include_entropy
     ) -> None:
-        # DONT ADD ANYTHING NOT TENSORFLOW HERE, otherwise tape gets all weird i think?
+        # Try to only use TF to make sure everyhting tracked
         with tf.GradientTape() as tape:
 
             # returns a tensor of probabilities (batch_size , num_actions)
@@ -87,11 +86,11 @@ class Actor:
 
             # takes in probability tensor above, creates new tensor with only the prob of the selected action 
             # so just probabilities[action] but for each probability vector (only of y put dims 1)
+            # print before and after shapes to see it work
             action_prob_current = tf.gather(action_probs, indices = action_k, batch_dims=1)
 
             # clip using tensorflow to try and speed up this monstrosity
             # cant use tf.cond elementwise but this basically uses a mask
-            # https://stackoverflow.com/questions/37912161/how-can-i-compute-element-wise-conditionals-on-batches-in-tensorflow
             clip = tf.where(adv_k>=0,(1 + self.eps) * adv_k, (1 - self.eps) * adv_k )
 
             x = tf.where(action_prob_k >0, action_prob_current / action_prob_k, 0)
@@ -105,7 +104,7 @@ class Actor:
                 weighted_entropy = tf.multiply(entropy_term, self.entropy)
                 loss = tf.add( loss , weighted_entropy)
 
-            # minus cuz idk how to maximise
+            # minus jus to use the same 
             # side note you need to use miltiply, just putting -1 in front was a very painful bug
             loss = tf.reduce_mean(tf.multiply(loss,-1))
 

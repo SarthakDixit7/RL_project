@@ -308,3 +308,24 @@ The script supports filtering (`--filter 90,100`), fps (`--fps`), and output dir
 
 ---
 
+## Utilised Code
+- Correctly using TF gradient tape to update weights
+  - Reference on using the function contained in Keras documentation
+  - tape.gradient and .apply gradients
+  - https://keras.io/examples/rl/actor_critic_cartpole/
+
+- Slicing for arbitrary indeces
+  - Again showed how to use itemgetter, used to get our batch indeces
+  - https://stackoverflow.com/questions/9106065/python-list-slicing-with-arbitrary-indices
+
+- Custom weights
+  - Used as reference on layer weight modification in conjunction with keras docs
+  -https://datascience.stackexchange.com/questions/19019/custom-weight-initialization-in-keras
+
+- Video Saving
+  - Showed how to use the save_video function using rgb_list
+  - https://stackoverflow.com/questions/77042526/how-to-record-and-save-video-of-gym-environment
+
+- Tutorial for Graph Plotting with latex
+  - used the ratios provided
+  - https://duetosymmetry.com/code/latex-mpl-fig-tips/

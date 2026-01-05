@@ -14,65 +14,6 @@ from model.cnn import ReducedGlorot
 ## Initial hyperparameter suggenstions taken from https://arxiv.org/pdf/2006.05990
 ##
 class AgentPPO:
-    """
-    Main PPO agent Class with GAE + Entropy
-
-    Attributes
-    ----------
-    stored_traj: dict[str, list]
-        - All relevant stored trajectory information. These are stored as lists and are extended with each episodes complete trajectory
-        - Note: correct indecies are currently ensured by extending single threaded after all episodes are complete
-        - {
-            "observation": [] ,
-            "reward": [] ,
-            "terminated": [] ,
-            "truncated": [] ,
-            "info": [] ,
-            "rtg": [],
-            "adv": [],
-            "action": [],
-            "action_prob": [],
-            "critic_val": []
-        }
-    d_size: int
-        - Number of trajectories samples during each iteration of k (or in our case cycles)
-    collection_size: int
-        - Numper of steps played by each env before updating
-    actor: Actor
-        - Constructed Actor class containing its network and update methods
-    critic: Critic
-        - Constructed Critic class containing its network and update methods
-    discount: float 
-        - Designated discount 𝛾 value for calculating dicounted sum of returns
-    epsilon: float
-        - Clipping threshold designated in PPO clip
-    td_lambda: float
-        - GAE weighting term
-    reward_history: list
-        - Total mean episodic reward store, across samples collected each cycle
-    step_history: list
-        - Cumulative sum of all played steps after each cycle correspoding to the reward mean
-    total_steps: int
-        - Counter to hold cumulative steps 
-    rolling_mean_history: list
-        - complete rolling mean history at each step_value
-    total_updates: int
-        - Total gradient updates observed
-
-    Methods
-    -------   
-    train_cycle
-        - Main training cycle for the model (the loop indexed by k in the psudocode)
-        - Available toggles for GAE or TD(1)
-        - Experience collection is multithreaded with number of collected trajectories dependant on self.d_size
-    save_models
-        - Function to store curent weights in .keras file
-    load_models
-        - Function to set current Actor and Critic to some stored models
-        - This is useful if training stagnates and the learning rate needs to be manually modified OR for testing purposes
-    clear_data
-        - Resets the stored_traj attribute to allow for a new set of training data to be collected
-    """
 
     def __init__(
             self ,
@@ -136,11 +77,10 @@ class AgentPPO:
             use_entropy,
         ) -> tuple :
 
-        mean_reward, total_steps = self.__collect_data(env=env, seed=seed[0] ,use_gae=use_gae)
+        mean_reward, total_steps, std = self.__collect_data(env=env, seed=seed[0] ,use_gae=use_gae) # type: ignore
 
         indeces = np.arange(0,self.collection_size)
 
-        # 2. train the agent (this was steps 2 and 3 but can do both at the same time)
         for epoch in range(epoch_num):
             np.random.seed = seed[epoch + 1]
             np.random.shuffle(indeces)
@@ -149,14 +89,11 @@ class AgentPPO:
 
                 batch_indeces = indeces[batch: (batch+batch_size)].tolist()
 
+                # so we can get the items at sliced index
                 # https://stackoverflow.com/questions/9106065/python-list-slicing-with-arbitrary-indices
                 batch_make = itemgetter(*batch_indeces)
 
-                # ONLY CONVERT HERE OTHERWISE GPU MEMORY IS COOKED (i think)
-                # gradient tape gets too big if not batch allocated to GPU
-                # also means both foward pass, backward pass and tape are all on GPU memory so relitively fast?
-                #
-                # if we could get tf.Dataset working, prefetch and autotune would be vey nice 
+                # ONLY CONVERT to tensors HERE OTHERWISE OOM
                 obs = tf.concat(batch_make(self.stored_traj["observation"]), axis=0)
                 action_prob_k = tf.concat(batch_make(self.stored_traj["action_prob"]), axis=0)
                 adv_k = tf.concat(batch_make(self.stored_traj["adv"]), axis=0)
@@ -186,48 +123,67 @@ class AgentPPO:
         self.step_history.append(self.total_steps)
         self.rolling_mean_history.append(rolling_mean)
 
-        return mean_reward, total_steps
+        return mean_reward, total_steps, std
+
+    # def test(
+    #         self,
+    #         env,
+    #         test_num,
+    # ) -> None:        
+    #     # run test episodes until we have at least test_num episodes collected
+    #     episodic_all = []
+    #     seed = np.random.randint(0,400000,1)
+
+    #     # Use a reasonable step limit per batch to ensure episodes finish (large enough)
+    #     per_call_steps = max(1000, self.collection_size)
+
+    #     while len(episodic_all) < test_num:
+    #         result = self.__collect_data(env=env, seed = int(seed), step_limit=per_call_steps, test=True)
+    #         # __collect_data returns (mean_episodic, steps, std_episodic, episodic_reward) when test=True
+    #         if len(result) == 3:
+    #             _, steps, episodic_rewards = result
+    #         else:
+    #             # defensive fallback
+    #             mean_temp, steps , std, reward_history = result
+    #             episodic_rewards = []
+
+    #         episodic_all.extend(episodic_rewards) # type: ignore
+    #         seed = (seed + 1) % 4000000000
+
+    #         # safety: break if nothing collected to avoid infinite loop
+    #         if not episodic_rewards:
+    #             print("Warning: No test episodes finished in this interval; increasing step limit may help.")
+    #             break
+
+    #     # trim to requested number of episodes
+    #     episodic_all = episodic_all[:test_num]
+    #     mean_reward = float(np.mean(episodic_all)) if episodic_all else float('nan')
+
+    #     self.reward_history.append(mean_reward)
+    #     rolling_mean = np.mean(self.reward_history[-20:])
+    #     self.step_history.append(self.total_steps)
+    #     self.rolling_mean_history.append(rolling_mean)
+
+    #     print(f' =====> Test Episodes Mean Reward: {mean_reward} \n')
 
     def test(
             self,
             env,
             test_num,
-    ) -> None:        
-        # run test episodes until we have at least test_num episodes collected
-        episodic_all = []
-        seed = int(np.random.randint(0,400000,1))
-
-        # Use a reasonable step limit per batch to ensure episodes finish (large enough)
-        per_call_steps = max(1000, self.collection_size)
-
-        while len(episodic_all) < test_num:
-            result = self.__collect_data(env=env, seed = seed, step_limit=per_call_steps, test=True)
-            # __collect_data returns (mean, steps, episodic_list) when test=True
-            if len(result) == 3:
-                _, steps, episodic_rewards = result
-            else:
-                # defensive fallback
-                mean_temp, steps = result
-                episodic_rewards = []
-
-            episodic_all.extend(episodic_rewards)
-            seed = (seed + 1) % 4000000000
-
-            # safety: break if nothing collected to avoid infinite loop
-            if not episodic_rewards:
-                print("Warning: No test episodes finished in this interval; increasing step limit may help.")
-                break
-
-        # trim to requested number of episodes
-        episodic_all = episodic_all[:test_num]
-        mean_reward = float(np.mean(episodic_all)) if episodic_all else float('nan')
-
+    ) -> tuple:        
+        # run test episodes
+        seed = np.random.randint(0,400000,1)
+        mean_reward, steps, std_episodic, test_data = self.__collect_data(env=env, seed = int(seed), step_limit=test_num, test=True) # type: ignore
+        
         self.reward_history.append(mean_reward)
         rolling_mean = np.mean(self.reward_history[-20:])
         self.step_history.append(self.total_steps)
         self.rolling_mean_history.append(rolling_mean)
-
+        
         print(f' =====> Test Episodes Mean Reward: {mean_reward} \n')
+        print(test_data)
+
+        return mean_reward, std_episodic , test_data
 
    
     def saveModels(
@@ -307,8 +263,8 @@ class AgentPPO:
 
     def __collect_data(
             self,
-            env,
-            seed,
+            env : gym.vector.VectorEnv,
+            seed : int,
             step_limit = 0,
             use_gae = False,
             use_adv = False,
@@ -323,14 +279,12 @@ class AgentPPO:
 
         # set initial values
         observation = observation /255.0
-        # number of parallel envs for this call (training uses self.d_size; tests may vary)
-        n_envs = observation.shape[0]
-        terminated = np.zeros(n_envs, dtype=bool)
-        truncated = np.zeros(n_envs, dtype=bool)
-        info = np.zeros(n_envs)
+        terminated = np.zeros(self.d_size, dtype=bool)
+        truncated = np.zeros(self.d_size, dtype=bool)
+        info = np.zeros(self.d_size)
 
         # track total
-        total_reward = np.zeros(n_envs)
+        total_reward = np.zeros(self.d_size)
         steps = 0
         episodic_reward = []
 
@@ -386,7 +340,14 @@ class AgentPPO:
         episodes = np.where(mask,total_reward,0)
         episodes = episodes[episodes != 0]
         episodic_reward.extend(episodes)
-        mean_episodic = np.mean(episodic_reward)
+
+        if len(episodic_reward) > 0:
+            mean_episodic = np.mean(episodic_reward)
+            std_episodic = np.std(episodic_reward)
+        else:
+            mean_episodic = np.mean(total_reward)
+            std_episodic = np.std(total_reward)
+
         
         if not test:
             # perform both rewards to go + adv as soon as trajectory done
@@ -408,11 +369,10 @@ class AgentPPO:
             self.stored_traj["action_prob"].extend(t_action_prob)
             self.stored_traj["critic_val"].extend(t_critic_vals)
 
-        # If called in test mode, return episodic rewards too so caller can aggregate a fixed number of episodes
-        if test:
-            return mean_episodic, steps, episodic_reward
+            return mean_episodic, steps, std_episodic
+        
+        return mean_episodic, steps, std_episodic, episodic_reward
 
-        return mean_episodic, steps
 
 #
 # GAE calculation
@@ -451,7 +411,6 @@ class AgentPPO:
             # check if not at last recorded step to avoid indexing error 
             if time < steps-1:
                 # calculate td value, using same as adv
-                # 𝑟𝑡 + 𝛾𝑉(𝑠𝑡+1) − 𝑉(𝑠𝑡)
                 delta = reward + (self.discount * critic_vals[time + 1]) - critic_vals[time]
             
             if time< steps -1:
@@ -464,7 +423,7 @@ class AgentPPO:
 
         return rewards_tg, gae
 
-# Works less well than GAE but still here
+# This will not work if selected
     def __rtg_adv(
             self, 
             t_rw, 
