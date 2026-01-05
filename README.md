@@ -313,6 +313,7 @@ The script supports filtering (`--filter 90,100`), fps (`--fps`), and output dir
   - Reference on using the function contained in Keras documentation
   - tape.gradient and .apply gradients
   - https://keras.io/examples/rl/actor_critic_cartpole/
+  
 
 - Slicing for arbitrary indeces
   - Again showed how to use itemgetter, used to get our batch indeces
@@ -322,6 +323,13 @@ The script supports filtering (`--filter 90,100`), fps (`--fps`), and output dir
   - Used as reference on layer weight modification in conjunction with keras docs
   -https://datascience.stackexchange.com/questions/19019/custom-weight-initialization-in-keras
 
+- For RAM 
+  - https://persic.cloud/blog/ppo-ram
+
+- For CLI and Video 
+  - https://imageio.readthedocs.io/en/stable/
+  - https://docs.python.org/3/library/argparse.html
+
 - Video Saving
   - Showed how to use the save_video function using rgb_list
   - https://stackoverflow.com/questions/77042526/how-to-record-and-save-video-of-gym-environment
@@ -329,3 +337,7 @@ The script supports filtering (`--filter 90,100`), fps (`--fps`), and output dir
 - Tutorial for Graph Plotting with latex
   - used the ratios provided
   - https://duetosymmetry.com/code/latex-mpl-fig-tips/
+
+- Results comparisons 
+  - https://github.com/openai/baselines/blob/master/baselines/ppo1/run_atari.py
+  - https://docs.cleanrl.dev/rl-algorithms/ppo/#experiment-results_5
